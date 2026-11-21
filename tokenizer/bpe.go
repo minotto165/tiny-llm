@@ -14,34 +14,39 @@ import (
 // こちらは 1 パスで batch 個のペアを併合するので、ペア数え直しは
 // O(n * vocabSize / batch) 回で済む。併合は「すでに単位になったものの連結」だけなので、
 // 辞書と分割が構造的に一致する。
-func trainBPE(b []byte, offs []int, minCount int32, vocabSize, batch int, quiet bool) ([]int32, []string, []bool) {
+//
+// 語彙は特殊トークン (SpecialTokens) から始まり、通常のルーンと併合結果が続く。
+// merges は併合した順（優先度順）に並ぶ。
+func trainBPE(b []byte, offs []int, minCount int32, vocabSize, batch int, quiet bool) ([]int32, []string, []Merge) {
 	n := len(offs) - 1
 
 	// 初期記号は 1 ルーンずつ。id は出現順に振るので、同じ入力からは同じ id 列になる。
-	base := make([]string, 0, 8192)
+	vocab := make([]string, 0, vocabSize+4096)
+	vocab = append(vocab, SpecialTokens...)
 	index := make(map[string]int32, 8192)
 	ids := make([]int32, n)
 	for i := 0; i < n; i++ {
 		r := string(b[offs[i]:offs[i+1]])
 		id, ok := index[r]
 		if !ok {
-			id = int32(len(base))
+			id = int32(len(vocab))
 			index[r] = id
-			base = append(base, r)
+			vocab = append(vocab, r)
 		}
 		ids[i] = id
 	}
-
-	vocab := base
-	capHint := vocabSize + 4096
-	if capHint < len(vocab) {
-		capHint = len(vocab)
-	}
-	barrier := make([]bool, len(vocab), capHint)
-	for i, t := range vocab {
-		barrier[i] = IsBarrier([]rune(t)[0])
+	if cap(vocab) < vocabSize+4096 {
+		grown := make([]string, len(vocab), vocabSize+4096)
+		copy(grown, vocab)
+		vocab = grown
 	}
 
+	barrier := make([]bool, len(vocab))
+	for i := len(SpecialTokens); i < len(vocab); i++ {
+		barrier[i] = IsBarrier([]rune(vocab[i])[0])
+	}
+
+	var merges []Merge
 	for pass := 0; len(vocab) < vocabSize; pass++ {
 		// 1) 隣接ペアを 1 パスで数える。
 		counts := make(map[int64]int32, len(ids)/2+1)
@@ -88,9 +93,11 @@ func trainBPE(b []byte, offs []int, minCount int32, vocabSize, batch int, quiet 
 			vocab = append(vocab, vocab[a]+vocab[bb])
 			barrier = append(barrier, false)
 			rank[c.key] = id
+			merges = append(merges, Merge{A: a, B: bb, New: id})
 		}
 
-		// 4) 併合を 1 パスで適用する。左から見て、右隣のペアより優先度が高ければ併合。
+		// 4) 併合を 1 パスで適用する。左から見て、右隣のペアが同じか低い優先度なら併合する。
+		//    同じ優先度（重なった同一ペア）は左を優先し、heap を使う Encode と結果を揃える。
 		rankAt := func(i int) int32 {
 			if i+1 >= len(ids) {
 				return -1
@@ -111,7 +118,7 @@ func trainBPE(b []byte, offs []int, minCount int32, vocabSize, batch int, quiet 
 				l := rankAt(i)
 				if l >= 0 {
 					r := rankAt(i + 1)
-					if r < 0 || l < r {
+					if r < 0 || l <= r {
 						out = append(out, l)
 						i += 2
 						continue
@@ -127,5 +134,5 @@ func trainBPE(b []byte, offs []int, minCount int32, vocabSize, batch int, quiet 
 			log.Printf("pass %d: vocab %d, symbols %d", pass, len(vocab), len(ids))
 		}
 	}
-	return ids, vocab, barrier
+	return ids, vocab, merges
 }

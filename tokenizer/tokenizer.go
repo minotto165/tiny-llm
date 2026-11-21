@@ -22,9 +22,11 @@ type Config struct {
 }
 
 // Result は学習の結果。IDs は入力の分割で、Vocab[IDs[i]] が i 番目のトークン。
+// Merges は併合規則を優先度順に並べたもので、新しいテキストの分割に使う。
 type Result struct {
-	IDs   []int32
-	Vocab []string
+	IDs    []int32
+	Vocab  []string
+	Merges []Merge
 }
 
 // Tokens は分割を文字列の列に戻す。
@@ -56,8 +58,8 @@ func Train(src []byte, cfg Config) (Result, error) {
 	if len(offs) <= 1 {
 		return Result{}, fmt.Errorf("empty input")
 	}
-	ids, vocab, _ := trainBPE(src, offs, int32(cfg.MinCount), cfg.VocabSize, cfg.Batch, cfg.Quiet)
-	return Result{IDs: ids, Vocab: vocab}, nil
+	ids, vocab, merges := trainBPE(src, offs, int32(cfg.MinCount), cfg.VocabSize, cfg.Batch, cfg.Quiet)
+	return Result{IDs: ids, Vocab: vocab, Merges: merges}, nil
 }
 
 // RuneOffsets は各ルーン先頭のバイト位置と、末尾の位置を返す。
@@ -79,9 +81,12 @@ func IsBarrier(r rune) bool {
 
 // WriteVocab は語彙を JSON 配列として書き出す（添字がトークン id）。
 func WriteVocab(path string, vocab []string) error {
-	data, err := json.MarshalIndent(vocab, "", "  ")
-	if err != nil {
+	var sb strings.Builder
+	enc := json.NewEncoder(&sb)
+	enc.SetIndent("", "  ")
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(vocab); err != nil {
 		return fmt.Errorf("marshal vocabulary: %w", err)
 	}
-	return os.WriteFile(path, append(data, '\n'), 0o644)
+	return os.WriteFile(path, []byte(sb.String()), 0o644)
 }
