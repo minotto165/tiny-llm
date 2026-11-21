@@ -31,3 +31,8 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# corpora and derived outputs (regenerate with scripts/collect_corpus.py)
+testdata/input.txt
+testdata/output.txt
+testdata/japanese_corpus.txt
