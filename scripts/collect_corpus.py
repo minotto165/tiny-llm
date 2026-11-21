@@ -34,9 +34,9 @@ import datetime
 # ─────────────────────────────────────────────
 # 設定
 # ─────────────────────────────────────────────
-HERE        = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_FILE = os.path.join(HERE, "testdata", "input.txt")
-STATS_FILE  = os.path.join(HERE, "testdata", "corpus_stats.txt")
+ROOT        = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+OUTPUT_FILE = os.path.join(ROOT, "testdata", "input.txt")
+STATS_FILE  = os.path.join(ROOT, "testdata", "corpus_stats.txt")
 
 # 青空文庫: リクエスト間隔（マナー）
 AOZORA_SLEEP = 1.0
