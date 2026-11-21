@@ -8,12 +8,14 @@
   2. Wikipedia日本語版 API   - 各種記事 ~100件
 
 使い方:
-  python collect_japanese_corpus.py
+  python3 collect_corpus.py
 
 出力:
-  japanese_corpus.txt     -- 結合済みコーパス
-  corpus_stats.txt        -- 収集統計
+  testdata/input.txt        -- 結合済みコーパス (トークナイザの入力)
+  testdata/corpus_stats.txt -- 収集統計
 
+出力先はこのスクリプトのあるディレクトリ基準なので、どこから実行してもよい。
+Wikipedia は全文取得のため 1 リクエスト 1 記事 (API の制約)。
 依存ライブラリ: 標準ライブラリのみ (Python 3.6+)
 """
 
@@ -32,15 +34,14 @@ import datetime
 # ─────────────────────────────────────────────
 # 設定
 # ─────────────────────────────────────────────
-OUTPUT_FILE = "testdata/input.txt"
-STATS_FILE  = "testdata/corpus_stats.txt"
+HERE        = os.path.dirname(os.path.abspath(__file__))
+OUTPUT_FILE = os.path.join(HERE, "testdata", "input.txt")
+STATS_FILE  = os.path.join(HERE, "testdata", "corpus_stats.txt")
 
 # 青空文庫: リクエスト間隔（マナー）
 AOZORA_SLEEP = 1.0
-# Wikipedia API: リクエスト間隔
-WIKI_SLEEP   = 0.5
-# Wikipedia: 1回のAPIリクエストで取得する記事数
-WIKI_BATCH   = 5
+# Wikipedia API: リクエスト間隔 (レート制限に当たらない程度に空ける)
+WIKI_SLEEP   = 1.0
 
 # ─────────────────────────────────────────────
 # 青空文庫 作品リスト
@@ -137,11 +138,36 @@ WIKI_TITLES = [
 def log(msg):
     print(msg, flush=True)
 
-def fetch_bytes(url, timeout=30):
+def fetch_bytes(url, timeout=30, retries=5):
+    """429/5xx は Retry-After を見て待ち、指数バックオフで再試行する。"""
     headers = {"User-Agent": "JapaneseCorpusCollector/1.0 (educational use)"}
-    req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read()
+    delay = 2.0
+    for attempt in range(retries):
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return r.read()
+        except urllib.error.HTTPError as e:
+            if e.code not in (429, 500, 502, 503, 504) or attempt == retries - 1:
+                raise
+            wait = delay
+            retry_after = e.headers.get("Retry-After") if e.headers else None
+            if retry_after:
+                try:
+                    wait = max(wait, float(retry_after))
+                except ValueError:
+                    pass
+            wait = min(wait, 30.0)
+            log(f"    HTTP {e.code}: {wait:.0f} 秒待って再試行 ({attempt + 1}/{retries - 1})")
+            time.sleep(wait)
+            delay = min(delay * 2, 60)
+        except (urllib.error.URLError, TimeoutError) as e:
+            if attempt == retries - 1:
+                raise
+            log(f"    {e}: {delay:.0f} 秒待って再試行 ({attempt + 1}/{retries - 1})")
+            time.sleep(delay)
+            delay = min(delay * 2, 60)
+    raise RuntimeError("unreachable")
 
 def fetch_text(url, encoding="utf-8", timeout=30):
     return fetch_bytes(url, timeout).decode(encoding, errors="replace")
@@ -205,26 +231,30 @@ def collect_aozora():
 # ─────────────────────────────────────────────
 WIKI_API = "https://ja.wikipedia.org/w/api.php"
 
-def fetch_wiki_batch(titles):
-    """複数タイトルを1リクエストで取得"""
+def fetch_wiki_article(title):
+    """1 記事分の本文プレーンテキストを取得する。
+    prop=extracts で全文 (exintro なし) を取るときは exlimit を 1 にしなければ
+    ならない (MediaWiki の制約)。複数タイトルをまとめて投げると 1 件しか
+    返らないので、1 リクエスト 1 記事で取得する。
+    """
     params = {
         "action":          "query",
         "format":          "json",
         "prop":            "extracts",
         "explaintext":     "1",
         "exsectionformat": "plain",
-        "titles":          "|".join(titles),
+        "exlimit":         "1",
+        "redirects":       "1",
+        "titles":          title,
     }
     url = WIKI_API + "?" + urllib.parse.urlencode(params)
     data = json.loads(fetch_text(url))
     pages = data["query"]["pages"]
-    results = {}
     for page in pages.values():
-        title  = page.get("title", "")
-        extract = page.get("extract", "")
-        if extract and not page.get("missing"):
-            results[title] = extract
-    return results
+        if page.get("missing") is not None:
+            return None
+        return page.get("extract") or None
+    return None
 
 def clean_wiki(text):
     # セクション見出し（== ... ==）を削除
@@ -239,21 +269,21 @@ def collect_wikipedia():
     log("-" * 55)
 
     results = []
-    # バッチに分割
-    batches = [WIKI_TITLES[i:i+WIKI_BATCH] for i in range(0, len(WIKI_TITLES), WIKI_BATCH)]
-
-    for batch_idx, batch in enumerate(batches):
+    for idx, title in enumerate(WIKI_TITLES, 1):
         try:
-            pages = fetch_wiki_batch(batch)
-            for title, text in pages.items():
+            text = fetch_wiki_article(title)
+            if text is None:
+                results.append({"title": title, "text": "", "chars": 0, "ok": False,
+                                "error": "missing page"})
+                log(f"  [{idx:>3}] {title:<28} {'---':>8}  ✗ not found")
+            else:
                 cleaned = clean_wiki(text)
                 n = len(cleaned)
                 results.append({"title": title, "text": cleaned, "chars": n, "ok": True})
-                log(f"  [{batch_idx*WIKI_BATCH + len(results):>3}] {title:<28} {n:>8,} 文字")
+                log(f"  [{idx:>3}] {title:<28} {n:>8,} 文字")
         except Exception as e:
-            log(f"  バッチ {batch_idx+1} エラー: {e}")
-            for title in batch:
-                results.append({"title": title, "text": "", "chars": 0, "ok": False, "error": str(e)})
+            results.append({"title": title, "text": "", "chars": 0, "ok": False, "error": str(e)})
+            log(f"  [{idx:>3}] {title:<28} {'---':>8}  ✗ {e}")
         time.sleep(WIKI_SLEEP)
 
     ok = [r for r in results if r["ok"]]
@@ -270,6 +300,8 @@ def main():
     log("日本語コーパス収集スクリプト")
     log(f"開始: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     log("=" * 60)
+
+    os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
 
     # ── 収集 ──
     aozora_results = collect_aozora()
@@ -302,25 +334,25 @@ def main():
     log(f"  → {total_chars:,} 文字 を書き込みました")
 
     # ── 統計ファイル出力 ──
-    # with open(STATS_FILE, "w", encoding="utf-8") as f:
-    #     f.write(f"収集統計レポート\n")
-    #     f.write(f"生成日時: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-    #     f.write("=" * 50 + "\n\n")
+    with open(STATS_FILE, "w", encoding="utf-8") as f:
+        f.write("収集統計レポート\n")
+        f.write(f"生成日時: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write("=" * 50 + "\n\n")
 
-    #     f.write("【青空文庫】\n")
-    #     for r in aozora_results:
-    #         mark = "✓" if r["ok"] else "✗"
-    #         err  = f"  ({r.get('error','')})" if not r["ok"] else ""
-    #         f.write(f"  {mark} {r['title']:<30} {r['chars']:>10,} 文字{err}\n")
+        f.write("【青空文庫】\n")
+        for r in aozora_results:
+            mark = "✓" if r["ok"] else "✗"
+            err = f"  ({r.get('error', '')})" if not r["ok"] else ""
+            f.write(f"  {mark} {r['title']:<30} {r['chars']:>10,} 文字{err}\n")
 
-    #     f.write("\n【Wikipedia】\n")
-    #     for r in wiki_results:
-    #         mark = "✓" if r["ok"] else "✗"
-    #         err  = f"  ({r.get('error','')})" if not r["ok"] else ""
-    #         f.write(f"  {mark} {r['title']:<30} {r['chars']:>10,} 文字{err}\n")
+        f.write("\n【Wikipedia】\n")
+        for r in wiki_results:
+            mark = "✓" if r["ok"] else "✗"
+            err = f"  ({r.get('error', '')})" if not r["ok"] else ""
+            f.write(f"  {mark} {r['title']:<30} {r['chars']:>10,} 文字{err}\n")
 
-    #     f.write("\n" + "=" * 50 + "\n")
-    #     f.write(f"合計: {total_chars:,} 文字 / {len(ok_results)} 件\n")
+        f.write("\n" + "=" * 50 + "\n")
+        f.write(f"合計: {total_chars:,} 文字 / {len(ok_results)} 件\n")
 
     # ── サマリ表示 ──
     log("\n" + "=" * 60)
