@@ -10,4 +10,4 @@ $ python3 scripts/collect_corpus.py   # 青空文庫と Wikipedia から input.t
 
 `output.txt` は `/` 区切り、`dic.txt` は語彙 (JSON 配列)、`merges.txt` は併合規則。`/` を除くと入力に戻る。
 
-フラグ: `-in` `-out` `-dict` `-merges` `-vocab` 32000 `-mincount` 2 `-batch` 2000 `-holdout` 0
+フラグ: `-in` `-out` `-dict` `-merges` `-vocab` 8000 `-mincount` 2 `-minchar` 50 `-batch` 2000 `-holdout` 0

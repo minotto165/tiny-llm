@@ -17,8 +17,9 @@ func main() {
 	outPath := flag.String("out", "testdata/output.txt", "segmented output file")
 	dictPath := flag.String("dict", "testdata/dic.txt", "vocabulary (JSON) output file")
 	mergesPath := flag.String("merges", "testdata/merges.txt", "merge rules (priority order) output file")
-	vocabSize := flag.Int("vocab", 32000, "target vocabulary size (merges stop here)")
+	vocabSize := flag.Int("vocab", 8000, "target vocabulary size (merges stop here)")
 	minCount := flag.Int("mincount", 2, "minimum pair frequency to merge")
+	minChar := flag.Int("minchar", 50, "minimum rune frequency for a base token (0 = all; rarer runes become <unk>)")
 	batch := flag.Int("batch", 2000, "merges applied per counting pass (speed/quality knob)")
 	holdout := flag.Float64("holdout", 0, "fraction of the tail held out for tokens/char (0 = off)")
 	quiet := flag.Bool("quiet", false, "suppress progress logs")
@@ -42,10 +43,11 @@ func main() {
 
 	t0 := time.Now()
 	res, err := tokenizer.Train(trainSrc, tokenizer.Config{
-		VocabSize: *vocabSize,
-		MinCount:  *minCount,
-		Batch:     *batch,
-		Quiet:     *quiet,
+		VocabSize:    *vocabSize,
+		MinCount:     *minCount,
+		MinCharCount: *minChar,
+		Batch:        *batch,
+		Quiet:        *quiet,
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -62,9 +64,30 @@ func main() {
 		tokens[i] = model.Vocab[id]
 	}
 	encodeDur := time.Since(t1)
-	// 可逆性の検査: トークンを連結すると入力に戻るか。
-	if got := strings.Join(tokens, ""); got != string(trainSrc) {
-		log.Fatalf("internal error: detokenization mismatch (%d vs %d bytes)", len(got), len(trainSrc))
+	// 可逆性の検査: <unk> 以外のトークンを連結すると、語彙に入らなかった
+	// ルーン (-minchar) を除いた入力に戻るか。
+	expected := string(trainSrc)
+	if *minChar > 0 {
+		counts := make(map[rune]int)
+		for _, r := range expected {
+			counts[r]++
+		}
+		var eb strings.Builder
+		for _, r := range expected {
+			if counts[r] >= *minChar {
+				eb.WriteRune(r)
+			}
+		}
+		expected = eb.String()
+	}
+	var joined strings.Builder
+	for i, tok := range tokens {
+		if ids[i] != tokenizer.UnkID {
+			joined.WriteString(tok)
+		}
+	}
+	if got := joined.String(); got != expected {
+		log.Fatalf("internal error: detokenization mismatch (%d vs %d bytes)", len(got), len(expected))
 	}
 
 	if err := os.WriteFile(*outPath, []byte(strings.Join(tokens, "/")), 0o644); err != nil {
@@ -90,7 +113,19 @@ func main() {
 		if len(res.Vocab) > *vocabSize {
 			log.Printf("warning: input has %d distinct runes, more than vocab %d", len(res.Vocab), *vocabSize)
 		}
+		freq := make(map[int32]int, len(res.Vocab))
+		for _, id := range ids {
+			freq[id]++
+		}
+		rare := 0
+		for i := range res.Vocab {
+			if freq[int32(i)] < 100 {
+				rare++
+			}
+		}
 		log.Printf("corpus: %d runes, %d merges", len(tokenizer.RuneOffsets(trainSrc))-1, len(res.Merges))
+		log.Printf("vocab: %d, rare (<100): %d (%.1f%%)", len(res.Vocab), rare, 100*float64(rare)/float64(len(res.Vocab)))
+		log.Printf("corpus unk: %d (%.3f%%)", freq[tokenizer.UnkID], 100*float64(freq[tokenizer.UnkID])/float64(len(ids)))
 		log.Printf("train: %d tokens, encode: %d tokens", len(res.IDs), len(tokens))
 		log.Printf("avg len: %.2f, 1-char: %.1f%%",
 			float64(totalLen)/float64(len(tokens)),

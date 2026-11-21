@@ -15,10 +15,11 @@ import (
 
 // Config は学習の設定。
 type Config struct {
-	VocabSize int  // 語彙数の上限。ここに達したら併合を止める
-	MinCount  int  // 併合するペアの最低頻度
-	Batch     int  // 1 回の計数で併合するペア数（速度と厳密さのつまみ）
-	Quiet     bool // 進捗ログを抑止する
+	VocabSize    int  // 語彙数の上限。ここに達したら併合を止める
+	MinCount     int  // 併合するペアの最低頻度
+	MinCharCount int  // 語彙に入れるルーンの最低頻度 (0 なら全て入れる。下回るルーンは <unk>)
+	Batch        int  // 1 回の計数で併合するペア数（速度と厳密さのつまみ）
+	Quiet        bool // 進捗ログを抑止する
 }
 
 // Result は学習の結果。IDs は入力の分割で、Vocab[IDs[i]] が i 番目のトークン。
@@ -58,7 +59,7 @@ func Train(src []byte, cfg Config) (Result, error) {
 	if len(offs) <= 1 {
 		return Result{}, fmt.Errorf("empty input")
 	}
-	ids, vocab, merges := trainBPE(src, offs, int32(cfg.MinCount), cfg.VocabSize, cfg.Batch, cfg.Quiet)
+	ids, vocab, merges := trainBPE(src, offs, int32(cfg.MinCount), int32(cfg.MinCharCount), cfg.VocabSize, cfg.Batch, cfg.Quiet)
 	return Result{IDs: ids, Vocab: vocab, Merges: merges}, nil
 }
 

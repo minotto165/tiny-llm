@@ -17,8 +17,18 @@ import (
 //
 // 語彙は特殊トークン (SpecialTokens) から始まり、通常のルーンと併合結果が続く。
 // merges は併合した順（優先度順）に並ぶ。
-func trainBPE(b []byte, offs []int, minCount int32, vocabSize, batch int, quiet bool) ([]int32, []string, []Merge) {
+func trainBPE(b []byte, offs []int, minCount, minCharCount int32, vocabSize, batch int, quiet bool) ([]int32, []string, []Merge) {
 	n := len(offs) - 1
+
+	// ルーンの頻度。minCharCount > 0 のとき、これ未満のルーンは語彙に入れず <unk> にする。
+	// コーパス全体で数回しか出ない漢字や記号が語彙を占めるのを防ぐ。
+	var runeFreq map[string]int32
+	if minCharCount > 0 {
+		runeFreq = make(map[string]int32, 8192)
+		for i := 0; i < n; i++ {
+			runeFreq[string(b[offs[i]:offs[i+1]])]++
+		}
+	}
 
 	// 初期記号は 1 ルーンずつ。id は出現順に振るので、同じ入力からは同じ id 列になる。
 	vocab := make([]string, 0, vocabSize+4096)
@@ -27,6 +37,10 @@ func trainBPE(b []byte, offs []int, minCount int32, vocabSize, batch int, quiet 
 	ids := make([]int32, n)
 	for i := 0; i < n; i++ {
 		r := string(b[offs[i]:offs[i+1]])
+		if runeFreq != nil && runeFreq[r] < minCharCount {
+			ids[i] = UnkID
+			continue
+		}
 		id, ok := index[r]
 		if !ok {
 			id = int32(len(vocab))
@@ -45,6 +59,7 @@ func trainBPE(b []byte, offs []int, minCount int32, vocabSize, batch int, quiet 
 	for i := len(SpecialTokens); i < len(vocab); i++ {
 		barrier[i] = IsBarrier([]rune(vocab[i])[0])
 	}
+	barrier[UnkID] = true // <unk> をまたぐ併合は作らない
 
 	var merges []Merge
 	for pass := 0; len(vocab) < vocabSize; pass++ {

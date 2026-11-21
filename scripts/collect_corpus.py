@@ -172,6 +172,35 @@ def fetch_bytes(url, timeout=30, retries=5):
 def fetch_text(url, encoding="utf-8", timeout=30):
     return fetch_bytes(url, timeout).decode(encoding, errors="replace")
 
+# 日本語 (ひらがな・カタカナ・漢字・々〆) を含む行だけを残すための判定。
+CJK_RE = re.compile(r"[\u3041-\u309f\u30a1-\u30fa\u4e00-\u9fff々〆ヵヶ]")
+
+def clean_corpus(text):
+    """収集後のコーパスを行単位で清掃する。
+
+    - 区切り行 (= の連続)、収集ヘッダ (#)、作品見出し (■) を落とす
+    - 空行を落とす
+    - ルビの残り (｜) を落とす
+    - 日本語を含まない行 (URL・記号・数字だけの行) を落とす
+    - URL を含む行 (Wikipedia の出典・外部リンク) を落とす
+    """
+    out = []
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        if line[0] in "#=":
+            continue
+        if line.startswith("■"):
+            continue
+        line = line.replace("｜", "").strip()
+        if not line or not CJK_RE.search(line):
+            continue
+        if "://" in line:
+            continue
+        out.append(line)
+    return "\n".join(out)
+
 
 # ─────────────────────────────────────────────
 # 青空文庫
@@ -188,6 +217,8 @@ def fetch_aozora(zip_url):
 def clean_aozora(text):
     # ヘッダ除去（区切り線まで）
     text = re.sub(r'^.*?-{50,}', '', text, count=1, flags=re.DOTALL)
+    # 「テキスト中に現れる記号について」の説明ブロック（全作品に共通の定型文）
+    text = re.sub(r'【テキスト中に現れる記号について】.*?-{50,}', '', text, count=1, flags=re.DOTALL)
     # フッタ除去
     text = re.sub(r'底本：.*$', '', text, flags=re.DOTALL)
     # ルビ《》除去
@@ -309,29 +340,23 @@ def main():
 
     all_results = aozora_results + wiki_results
     ok_results  = [r for r in all_results if r["ok"]]
+    raw_chars   = sum(r["chars"] for r in ok_results)
+
+    # ── 後処理（清掃）──
+    # 区切り行・URL 行・ルビ残り・空行を落とす。メタ情報は input.txt ではなく
+    # corpus_stats.txt にだけ残し、学習データに混ぜない。
+    for r in ok_results:
+        r["text"] = clean_corpus(r["text"])
+        r["chars"] = len(r["text"])
     total_chars = sum(r["chars"] for r in ok_results)
 
     # ── コーパスファイル出力 ──
     log(f"\n【出力】{OUTPUT_FILE}")
-
-    header = (
-        f"# 日本語自然言語処理用コーパス\n"
-        f"# 収集日時: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-        f"# ソース: 青空文庫 (パブリックドメイン) + Wikipedia日本語版 (CC BY-SA 3.0)\n"
-        f"# 総文字数: {total_chars:,} 文字\n"
-        f"# 収録数: {len(ok_results)} 件\n"
-        f"{'#' * 60}\n\n"
-    )
-
-    sections = []
-    for r in ok_results:
-        sep = "=" * 60
-        sections.append(f"\n\n{sep}\n■ {r['title']}\n{sep}\n\n{r['text']}")
-
+    corpus = clean_corpus("\n\n".join(r["text"] for r in ok_results))
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-        f.write(header + "".join(sections))
+        f.write(corpus + "\n")
 
-    log(f"  → {total_chars:,} 文字 を書き込みました")
+    log(f"  → {raw_chars:,} 文字 → {len(corpus):,} 文字 (清掃で {raw_chars - len(corpus):,} 文字削減)")
 
     # ── 統計ファイル出力 ──
     with open(STATS_FILE, "w", encoding="utf-8") as f:
@@ -352,6 +377,7 @@ def main():
             f.write(f"  {mark} {r['title']:<30} {r['chars']:>10,} 文字{err}\n")
 
         f.write("\n" + "=" * 50 + "\n")
+        f.write(f"清掃前: {raw_chars:,} 文字\n")
         f.write(f"合計: {total_chars:,} 文字 / {len(ok_results)} 件\n")
 
     # ── サマリ表示 ──
@@ -362,7 +388,7 @@ def main():
     wok = [r for r in wiki_results   if r["ok"]]
     log(f"  青空文庫 : {len(aok):>3} 作品  {sum(r['chars'] for r in aok):>10,} 文字")
     log(f"  Wikipedia: {len(wok):>3} 記事  {sum(r['chars'] for r in wok):>10,} 文字")
-    log(f"  合計     :          {total_chars:>10,} 文字")
+    log(f"  合計     :          {total_chars:>10,} 文字 (清掃後)")
     log(f"\n出力ファイル:")
     log(f"  {OUTPUT_FILE}  ({os.path.getsize(OUTPUT_FILE):,} bytes)")
     log(f"  {STATS_FILE}")
