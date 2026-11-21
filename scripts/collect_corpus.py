@@ -4,8 +4,8 @@
 日本語自然言語処理用コーパス収集スクリプト
 ========================================
 ソース:
-  1. 青空文庫 (aozora.gr.jp) - パブリックドメイン近代文学 ~20作品
-  2. Wikipedia日本語版 API   - 各種記事 ~100件
+  1. 青空文庫 (aozora.gr.jp) - パブリックドメイン近代文学 25作品
+  2. Wikipedia日本語版 API   - 厳選リスト + 全記事空間から約1200記事
 
 使い方:
   python3 collect_corpus.py
@@ -15,13 +15,16 @@
   testdata/corpus_stats.txt -- 収集統計
 
 出力先はこのスクリプトのあるディレクトリ基準なので、どこから実行してもよい。
-Wikipedia は全文取得のため 1 リクエスト 1 記事 (API の制約)。
+Wikipedia は prop=revisions で wikitext を 50 記事まとめて取得し、
+スクリプト内でプレーンテキストに変換する（prop=extracts の全文は
+1 リクエスト 1 記事の制約があるため使わない）。
 依存ライブラリ: 標準ライブラリのみ (Python 3.6+)
 """
 
 import urllib.request
 import urllib.parse
 import urllib.error
+import html
 import zipfile
 import io
 import re
@@ -42,6 +45,10 @@ STATS_FILE  = os.path.join(ROOT, "testdata", "corpus_stats.txt")
 AOZORA_SLEEP = 1.0
 # Wikipedia API: リクエスト間隔 (レート制限に当たらない程度に空ける)
 WIKI_SLEEP   = 1.0
+# Wikipedia: 1 リクエストで取る記事数 (API の上限 50)
+WIKI_BATCH_LIMIT = 50
+# Wikipedia: 目標記事数 (厳選リスト + 全記事空間からの追加分)
+WIKI_TARGET  = 1200
 
 # ─────────────────────────────────────────────
 # 青空文庫 作品リスト
@@ -262,63 +269,186 @@ def collect_aozora():
 # ─────────────────────────────────────────────
 WIKI_API = "https://ja.wikipedia.org/w/api.php"
 
-def fetch_wiki_article(title):
-    """1 記事分の本文プレーンテキストを取得する。
-    prop=extracts で全文 (exintro なし) を取るときは exlimit を 1 にしなければ
-    ならない (MediaWiki の制約)。複数タイトルをまとめて投げると 1 件しか
-    返らないので、1 リクエスト 1 記事で取得する。
+# 全記事空間を横断するときの開始位置（タイトル先頭文字）。
+WIKI_SEEDS = list("あかさたなはまやらわアカサタナハマヤラワ") + list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+# 記事として不適切なタイトル。
+SKIP_TITLE_RE = re.compile(
+    r"^(一覧|年表|Category:|Wikipedia:|ファイル:|Portal:|Template:|Help:|プロジェクト:)"
+)
+
+def fetch_wiki_batch(titles=None, gapfrom=None, gapcontinue=None):
+    """wikitext をまとめて取得する。
+
+    prop=extracts の全文は 1 リクエスト 1 記事だが、prop=revisions なら
+    titles に 50 件、generator=allpages なら 1 回で 50 記事ぶんの
+    wikitext が返る。
     """
     params = {
-        "action":          "query",
-        "format":          "json",
-        "prop":            "extracts",
-        "explaintext":     "1",
-        "exsectionformat": "plain",
-        "exlimit":         "1",
-        "redirects":       "1",
-        "titles":          title,
+        "action":        "query",
+        "format":        "json",
+        "formatversion": "2",
+        "prop":          "revisions",
+        "rvprop":        "content",
+        "rvslots":       "main",
     }
+    if titles:
+        params["titles"] = "|".join(titles)
+        params["redirects"] = "1"
+    else:
+        params["generator"]    = "allpages"
+        params["gapnamespace"] = "0"
+        params["gaplimit"]     = str(WIKI_BATCH_LIMIT)
+        params["gapfrom"]      = gapfrom
+        params["gapfilterredir"] = "nonredirects"
+        if gapcontinue:
+            params["gapcontinue"] = gapcontinue
+
     url = WIKI_API + "?" + urllib.parse.urlencode(params)
     data = json.loads(fetch_text(url))
-    pages = data["query"]["pages"]
-    for page in pages.values():
-        if page.get("missing") is not None:
-            return None
-        return page.get("extract") or None
-    return None
+    if "error" in data:
+        raise RuntimeError(f"API error: {data['error'].get('info', data['error'])}")
+
+    pages = {}
+    for page in data.get("query", {}).get("pages", []):
+        if page.get("missing"):
+            continue
+        revs = page.get("revisions") or []
+        if not revs:
+            continue
+        content = ((revs[0].get("slots") or {}).get("main") or {}).get("content")
+        if content:
+            pages[page["title"]] = content
+    nxt = (data.get("continue") or {}).get("gapcontinue")
+    return pages, nxt
+
+def clean_wikitext(text):
+    """wikitext を素朴にプレーンテキストへ落とす（toy 用の割り切り）。"""
+    # コメント・参照・HTML タグ
+    text = re.sub(r'<!--.*?-->', '', text, flags=re.S)
+    text = re.sub(r'<ref[^>]*/>', '', text)
+    text = re.sub(r'<ref[^>]*>.*?</ref>', '', text, flags=re.S)
+    text = re.sub(r'<[^<>]{1,200}>', '', text)
+    # 表
+    text = re.sub(r'\{\|.*?\|\}', '', text, flags=re.S)
+    # テンプレート（入れ子を数回剥がす）
+    for _ in range(8):
+        new = re.sub(r'\{\{[^{}]*\}\}', '', text)
+        if new == text:
+            break
+        text = new
+    # ファイル・カテゴリ（入れ子やキャプションを数回剥がす）
+    for _ in range(5):
+        new = re.sub(r'\[\[(ファイル|File|画像|Image|Category|カテゴリ):[^\n]*?\]\]', '', text, flags=re.I)
+        if new == text:
+            break
+        text = new
+    # 内部リンク・外部リンク
+    text = re.sub(r'\[\[([^\]|]*)\|([^\]]*)\]\]', r'\2', text)
+    text = re.sub(r'\[\[([^\]]*)\]\]', r'\1', text)
+    text = re.sub(r'\[https?://[^\s\]]+\s*([^\]]*)\]', r'\1', text)
+    text = re.sub(r'\[https?://[^\]]*\]', '', text)
+    text = re.sub(r'https?://\S+', '', text)
+    # リンク剥がしの残骸と、テンプレート除去で残った読点の連続を片付ける
+    text = re.sub(r'\[\[|\]\]', '', text)
+    text = re.sub(r'[、，,]{2,}', '、', text)
+    text = re.sub(r'[。．]{2,}', '。', text)
+    text = re.sub(r'（\s*[、,]+\s*', '（', text)
+    text = re.sub(r'\s*[、,]+\s*）', '）', text)
+    text = re.sub(r'（\s*）|\(\s*\)', '', text)
+    # 見出し・強調・箇条書き記号
+    text = re.sub(r'^=+\s*(.*?)\s*=+\s*$', r'\1', text, flags=re.M)
+    text = text.replace("'''", '').replace("''", '')
+    text = re.sub(r'^[#*:;]+\s*', '', text, flags=re.M)
+    text = html.unescape(text)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
 
 def clean_wiki(text):
     # セクション見出し（== ... ==）を削除
     text = re.sub(r'={2,}[^=]+={2,}', '', text)
+    # テンプレート・表の残骸行を落とす
+    lines = []
+    for line in text.split('\n'):
+        if ('{{' in line or '}}' in line or '[[' in line or ']]' in line
+                or line.lstrip().startswith(('|', '!'))):
+            continue
+        lines.append(line)
+    text = '\n'.join(lines)
     # 連続空行圧縮
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
 
 def collect_wikipedia():
     log("\n【Wikipedia日本語版】収集開始")
-    log(f"対象記事数: {len(WIKI_TITLES)} 件")
+    log(f"目標 {WIKI_TARGET} 記事 / {WIKI_BATCH_LIMIT} 記事perリクエスト")
     log("-" * 55)
 
     results = []
-    for idx, title in enumerate(WIKI_TITLES, 1):
+    seen = set()
+
+    def add(title, raw):
+        if title in seen or len(results) >= WIKI_TARGET:
+            return
+        if SKIP_TITLE_RE.search(title):
+            return
+        head = raw[:300].lower()
+        if '#redirect' in head or '{{曖昧さ回避' in raw or '{{aimai' in head:
+            return
+        text = clean_wiki(clean_wikitext(raw))
+        if len(text) < 800:
+            return
+        seen.add(title)
+        results.append({"title": title, "text": text, "chars": len(text), "ok": True})
+
+    # 1) 厳選リスト（従来の記事）
+    for i in range(0, len(WIKI_TITLES), WIKI_BATCH_LIMIT):
+        chunk = WIKI_TITLES[i:i + WIKI_BATCH_LIMIT]
         try:
-            text = fetch_wiki_article(title)
-            if text is None:
-                results.append({"title": title, "text": "", "chars": 0, "ok": False,
-                                "error": "missing page"})
-                log(f"  [{idx:>3}] {title:<28} {'---':>8}  ✗ not found")
-            else:
-                cleaned = clean_wiki(text)
-                n = len(cleaned)
-                results.append({"title": title, "text": cleaned, "chars": n, "ok": True})
-                log(f"  [{idx:>3}] {title:<28} {n:>8,} 文字")
+            pages, _ = fetch_wiki_batch(titles=chunk)
         except Exception as e:
-            results.append({"title": title, "text": "", "chars": 0, "ok": False, "error": str(e)})
-            log(f"  [{idx:>3}] {title:<28} {'---':>8}  ✗ {e}")
+            log(f"  [厳選] ✗ {e}")
+            time.sleep(WIKI_SLEEP)
+            continue
+        for title, raw in pages.items():
+            add(title, raw)
+        log(f"  厳選リスト {min(i + WIKI_BATCH_LIMIT, len(WIKI_TITLES)):>4}/{len(WIKI_TITLES)} "
+            f"→ 累計 {len(results)} 記事")
         time.sleep(WIKI_SLEEP)
 
+    # 2) 全記事空間を開始位置ごとに巡回して収集
+    #    （1 つの開始位置を掘り続けると「あ」行だけに偏るのでラウンドロビン）
+    conts = {seed: None for seed in WIKI_SEEDS}
+    rnd = 0
+    while len(results) < WIKI_TARGET:
+        progressed = False
+        for seed in WIKI_SEEDS:
+            if len(results) >= WIKI_TARGET:
+                break
+            if conts[seed] is False:
+                continue
+            try:
+                pages, nxt = fetch_wiki_batch(gapfrom=seed, gapcontinue=conts[seed])
+            except Exception as e:
+                log(f"  [{seed}] ✗ {e}")
+                conts[seed] = False
+                continue
+            conts[seed] = nxt if nxt else False
+            if not pages:
+                continue
+            before = len(results)
+            for title, raw in pages.items():
+                add(title, raw)
+            progressed = progressed or len(results) > before
+            log(f"  [{seed}] {len(pages):>2} 件取得 (+{len(results) - before:>2}) "
+                f"→ 累計 {len(results)}/{WIKI_TARGET} 記事")
+            time.sleep(WIKI_SLEEP)
+        rnd += 1
+        if not progressed:
+            break
+
     ok = [r for r in results if r["ok"]]
-    log(f"\nWikipedia: {len(ok)}/{len(WIKI_TITLES)} 記事取得, "
+    log(f"\nWikipedia: {len(ok)} 記事取得, "
         f"合計 {sum(r['chars'] for r in ok):,} 文字")
     return results
 
