@@ -182,6 +182,21 @@ def fetch_text(url, encoding="utf-8", timeout=30):
 # 日本語 (ひらがな・カタカナ・漢字・々〆) を含む行だけを残すための判定。
 CJK_RE = re.compile(r"[\u3041-\u309f\u30a1-\u30fa\u4e00-\u9fff々〆ヵヶ]")
 
+# clean_wikitext が落としきれなかった見出し語（過去のコーパスの再清掃用）。
+WIKI_HEADING_WORDS = set("""脚注 出典 注釈 参考文献 関連項目 関連文献 外部リンク 概要 歴史 沿革 特徴 来歴 経歴 生涯 人物
+登場人物 あらすじ ストーリー 解説 評価 受賞歴 作品 小説 漫画 映画 アニメ テレビ ラジオ ゲーム 舞台 音楽 主題歌
+シングル アルバム ディスコグラフィ ディスコグラフィー 収録曲 収録内容 出演 出演者 キャスト スタッフ メンバー
+パーソナリティ ゲスト 書籍 単行本 書誌情報 仕様 性能 諸元 要目 設計 開発 運用 運用国 採用国 艦歴 機体 武装
+エンジン 分類 備考 その他 ギャラリー 不具合 主な機能 放送時間 放送局 各話リスト エピソード タイアップ
+大会概要 試合結果 イベント バリエーション 各型 派生型 概説 背景 名称 呼称 交通 地理 教育 文化
+脚注・出典 注記 註釈 関連作品 関連人物 出典・脚注 中略 （中略）""".split())
+
+
+def strip_heading_lines(text):
+    """見出し語だけの行を取り除く。"""
+    return "\n".join(l for l in text.split("\n") if l.strip() not in WIKI_HEADING_WORDS)
+
+
 def clean_corpus(text):
     """収集後のコーパスを行単位で清掃する。
 
@@ -356,8 +371,9 @@ def clean_wikitext(text):
     text = re.sub(r'（\s*[、,]+\s*', '（', text)
     text = re.sub(r'\s*[、,]+\s*）', '）', text)
     text = re.sub(r'（\s*）|\(\s*\)', '', text)
-    # 見出し・強調・箇条書き記号
-    text = re.sub(r'^=+\s*(.*?)\s*=+\s*$', r'\1', text, flags=re.M)
+    # 見出しは本文ではないので行ごと落とす（"脚注" などの見出し語が
+    # 本文に混ざって生成結果に出るのを防ぐ）。強調・箇条書き記号も落とす。
+    text = re.sub(r'^=+\s*.*?\s*=+\s*$', '', text, flags=re.M)
     text = text.replace("'''", '').replace("''", '')
     text = re.sub(r'^[#*:;]+\s*', '', text, flags=re.M)
     text = html.unescape(text)
@@ -482,7 +498,7 @@ def main():
 
     # ── コーパスファイル出力 ──
     log(f"\n【出力】{OUTPUT_FILE}")
-    corpus = clean_corpus("\n\n".join(r["text"] for r in ok_results))
+    corpus = strip_heading_lines(clean_corpus("\n\n".join(r["text"] for r in ok_results)))
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
         f.write(corpus + "\n")
 

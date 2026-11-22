@@ -20,7 +20,9 @@ func main() {
 	minChar := flag.Int("minchar", 50, "minimum rune frequency for a base token")
 	batch := flag.Int("batch", 200, "merges applied per counting pass")
 	order := flag.Int("order", 2, "Markov order (1..3)")
+	discountFlag := flag.Float64("discount", lm.DefaultDiscount, "Kneser-Ney discount D")
 	holdout := flag.Float64("holdout", 0.05, "tail fraction held out for BPB")
+	evalPath := flag.String("eval", "", "separate evaluation file (trains on the whole -in file)")
 	quiet := flag.Bool("quiet", false, "suppress progress logs")
 	flag.Parse()
 
@@ -28,14 +30,23 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if *holdout <= 0 || *holdout >= 1 {
-		log.Fatalf("holdout must be in (0, 1): %v", *holdout)
-	}
 
 	// jptok -holdout と同じ位置で切る（語彙・分割を held-out から隔離する）。
-	offs := tokenizer.RuneOffsets(src)
-	cut := offs[int(float64(len(offs)-1)*(1-*holdout))]
-	head, tail := src[:cut], string(src[cut:])
+	head, tail := src, ""
+	if *evalPath != "" {
+		ev, err := os.ReadFile(*evalPath)
+		if err != nil {
+			log.Fatal(err)
+		}
+		tail = string(ev)
+	} else {
+		if *holdout <= 0 || *holdout >= 1 {
+			log.Fatalf("holdout must be in (0, 1): %v", *holdout)
+		}
+		offs := tokenizer.RuneOffsets(src)
+		cut := offs[int(float64(len(offs)-1)*(1-*holdout))]
+		head, tail = src[:cut], string(src[cut:])
+	}
 
 	t0 := time.Now()
 	res, err := tokenizer.Train(head, tokenizer.Config{
@@ -54,7 +65,7 @@ func main() {
 	tokDur := time.Since(t0)
 
 	t1 := time.Now()
-	m := lm.Train(headIDs, len(res.Vocab), *order)
+	m := lm.TrainWithDiscount(headIDs, len(res.Vocab), *order, *discountFlag)
 	bits, unk := 0.0, 0
 	for i, id := range tailIDs {
 		from := i - (*order - 1)

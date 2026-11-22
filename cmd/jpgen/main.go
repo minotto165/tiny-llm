@@ -9,6 +9,7 @@ import (
 	"math"
 	"math/rand"
 	"os"
+	"sort"
 
 	"github.com/minotto165/tiny-llm/lm"
 	"github.com/minotto165/tiny-llm/tokenizer"
@@ -21,6 +22,8 @@ func main() {
 	order := flag.Int("order", 2, "Markov order (1..3)")
 	n := flag.Int("n", 80, "number of tokens to generate")
 	temp := flag.Float64("temp", 0.8, "sampling temperature (0 = greedy)")
+	topK := flag.Int("topk", 40, "sample from the top K candidates (0 = all)")
+	repeat := flag.Float64("repeat", 1.15, "penalty on recently used tokens (1 = off)")
 	seed := flag.Int64("seed", 1, "random seed")
 	prompt := flag.String("prompt", "", "prompt text")
 	flag.Parse()
@@ -43,6 +46,7 @@ func main() {
 	out := model.Encode(*prompt)
 	probs := make([]float64, len(vocab))
 	rng := rand.New(rand.NewSource(*seed))
+	const repeatWindow = 32
 	for i := 0; i < *n; i++ {
 		from := len(out) - (*order - 1)
 		if from < 0 {
@@ -57,6 +61,14 @@ func main() {
 				continue
 			}
 			p := m.Prob(ctx, int32(w))
+			if *repeat > 1 {
+				for j := len(out) - repeatWindow; j < len(out); j++ {
+					if j >= 0 && int32(w) == out[j] {
+						p /= *repeat
+						break
+					}
+				}
+			}
 			if *temp > 0 && *temp != 1 {
 				p = math.Pow(p, 1 / *temp)
 			}
@@ -66,13 +78,14 @@ func main() {
 		if sum <= 0 {
 			log.Fatal("no probability mass")
 		}
-		out = append(out, sample(probs, sum, *temp, rng))
+		out = append(out, sample(probs, sum, *temp, *topK, rng))
 	}
 	fmt.Println(model.Decode(out))
 }
 
 // sample は probs (合計 sum) から 1 つ選ぶ。temp <= 0 なら最大確率のものを返す。
-func sample(probs []float64, sum, temp float64, rng *rand.Rand) int32 {
+// topK > 0 なら上位 K 個だけを候補にする。
+func sample(probs []float64, sum, temp float64, topK int, rng *rand.Rand) int32 {
 	if temp <= 0 {
 		best := int32(0)
 		for i, p := range probs {
@@ -81,6 +94,33 @@ func sample(probs []float64, sum, temp float64, rng *rand.Rand) int32 {
 			}
 		}
 		return best
+	}
+	if topK > 0 && topK < len(probs) {
+		// 上位 K 個の確率の位置を探して、その分だけで再正規化する。
+		idx := make([]int, 0, len(probs))
+		for i, p := range probs {
+			if p > 0 {
+				idx = append(idx, i)
+			}
+		}
+		if len(idx) > topK {
+			sort.Slice(idx, func(a, b int) bool { return probs[idx[a]] > probs[idx[b]] })
+			idx = idx[:topK]
+			sum = 0
+			for _, i := range idx {
+				sum += probs[i]
+			}
+			// 候補外は 0 にして、下の線形探索をそのまま使う。
+			keep := make([]bool, len(probs))
+			for _, i := range idx {
+				keep[i] = true
+			}
+			for i := range probs {
+				if !keep[i] {
+					probs[i] = 0
+				}
+			}
+		}
 	}
 	r := rng.Float64() * sum
 	for i, p := range probs {
