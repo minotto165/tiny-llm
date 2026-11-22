@@ -55,8 +55,8 @@ WIKI_BATCH_LIMIT = 50
 WIKI_TARGET  = 10000
 
 # 青空文庫: 作品目録から追加で拾う目標作品数と最小文字数
-AOZORA_TARGET    = 150
-AOZORA_MIN_CHARS = 15000
+AOZORA_TARGET    = 600
+AOZORA_MIN_CHARS = 8000
 AOZORA_INDEX_URL = "https://www.aozora.gr.jp/index_pages/list_person_all_extended_utf8.zip"
 
 # ─────────────────────────────────────────────
@@ -511,10 +511,11 @@ def aozora_index_works():
     random.Random(0).shuffle(cand)
     picked, per_author = [], {}
     for r in cand:
-        if len(picked) >= AOZORA_TARGET - len(AOZORA_WORKS):
+        # 短い作品は取得後に捨てるので、候補は多めに選ぶ
+        if len(picked) >= (AOZORA_TARGET - len(AOZORA_WORKS)) * 2:
             break
         pid = r.get("人物ID", "")
-        if per_author.get(pid, 0) >= 2:
+        if per_author.get(pid, 0) >= 3:
             continue
         per_author[pid] = per_author.get(pid, 0) + 1
         picked.append((r["テキストファイルURL"],
@@ -766,7 +767,17 @@ def collect_wikipedia():
 # ─────────────────────────────────────────────
 # メイン
 # ─────────────────────────────────────────────
+def parse_args(argv):
+    """--aozora-only / --out PATH だけを見る簡易パーサ。"""
+    aozora_only = "--aozora-only" in argv
+    out = OUTPUT_FILE
+    if "--out" in argv:
+        out = argv[argv.index("--out") + 1]
+    return aozora_only, out
+
+
 def main():
+    aozora_only, out_path = parse_args(sys.argv)
     log("=" * 60)
     log("日本語コーパス収集スクリプト")
     log(f"開始: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -776,7 +787,7 @@ def main():
 
     # ── 収集 ──
     aozora_results = collect_aozora()
-    wiki_results   = collect_wikipedia()
+    wiki_results   = [] if aozora_only else collect_wikipedia()
 
     all_results = aozora_results + wiki_results
     ok_results  = [r for r in all_results if r["ok"]]
@@ -791,9 +802,9 @@ def main():
     total_chars = sum(r["chars"] for r in ok_results)
 
     # ── コーパスファイル出力 ──
-    log(f"\n【出力】{OUTPUT_FILE}")
+    log(f"\n【出力】{out_path}")
     corpus = strip_heading_lines(clean_corpus("\n\n".join(r["text"] for r in ok_results)))
-    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+    with open(out_path, "w", encoding="utf-8") as f:
         f.write(corpus + "\n")
 
     log(f"  → {raw_chars:,} 文字 → {len(corpus):,} 文字 (清掃で {raw_chars - len(corpus):,} 文字削減)")
