@@ -17,7 +17,7 @@ func main() {
 	outPath := flag.String("out", "testdata/output.txt", "segmented output file")
 	dictPath := flag.String("dict", "testdata/dic.txt", "vocabulary (JSON) output file")
 	mergesPath := flag.String("merges", "testdata/merges.txt", "merge rules (priority order) output file")
-	vocabSize := flag.Int("vocab", 18000, "target vocabulary size (merges stop here)")
+	vocabSize := flag.Int("vocab", 40000, "target vocabulary size (merges stop here)")
 	minCount := flag.Int("mincount", 2, "minimum pair frequency to merge")
 	minChar := flag.Int("minchar", 50, "minimum rune frequency for a base token (0 = all; rarer runes become <unk>)")
 	batch := flag.Int("batch", 200, "merges applied per counting pass (speed/quality knob)")

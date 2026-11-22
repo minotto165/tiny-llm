@@ -25,6 +25,8 @@ import urllib.request
 import urllib.parse
 import urllib.error
 import html
+import random
+import csv
 import zipfile
 import io
 import re
@@ -40,6 +42,8 @@ import datetime
 ROOT        = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUTPUT_FILE = os.path.join(ROOT, "testdata", "input.txt")
 STATS_FILE  = os.path.join(ROOT, "testdata", "corpus_stats.txt")
+# 取得済みテキストのキャッシュ。途中で止めても次の実行で続きから集める。
+CACHE_FILE  = os.path.join(ROOT, "testdata", ".collect_cache.jsonl")
 
 # 青空文庫: リクエスト間隔（マナー）
 AOZORA_SLEEP = 1.0
@@ -48,7 +52,12 @@ WIKI_SLEEP   = 1.0
 # Wikipedia: 1 リクエストで取る記事数 (API の上限 50)
 WIKI_BATCH_LIMIT = 50
 # Wikipedia: 目標記事数 (厳選リスト + 全記事空間からの追加分)
-WIKI_TARGET  = 3000
+WIKI_TARGET  = 10000
+
+# 青空文庫: 作品目録から追加で拾う目標作品数と最小文字数
+AOZORA_TARGET    = 150
+AOZORA_MIN_CHARS = 15000
+AOZORA_INDEX_URL = "https://www.aozora.gr.jp/index_pages/list_person_all_extended_utf8.zip"
 
 # ─────────────────────────────────────────────
 # 青空文庫 作品リスト
@@ -255,17 +264,89 @@ def clean_aozora(text):
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
 
+def load_cache():
+    """キャッシュ済みのテキストを読む。"""
+    items = []
+    if not os.path.exists(CACHE_FILE):
+        return items
+    with open(CACHE_FILE, encoding="utf-8") as f:
+        for line in f:
+            try:
+                items.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return items
+
+
+def append_cache(kind, key, text):
+    with open(CACHE_FILE, "a", encoding="utf-8") as f:
+        f.write(json.dumps({"kind": kind, "key": key, "text": text}, ensure_ascii=False) + "\n")
+
+
+def aozora_index_works():
+    """青空文庫の作品目録から、新字新仮名の日本文学作品を選ぶ。
+
+    目録は全作品・全人物の CSV を zip で固めたもの。翻訳物を避けるため
+    分類番号が日本文学 (NDC 91x) のものだけを使い、同じ著者から取りすぎ
+    ないように 1 人 2 作品までにする。
+    """
+    data = fetch_bytes(AOZORA_INDEX_URL)
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        name = [n for n in z.namelist() if n.endswith(".csv")][0]
+        raw = z.read(name).decode("utf-8")
+    rows = list(csv.DictReader(io.StringIO(raw)))
+    known = {url for url, _ in AOZORA_WORKS}
+    cand = [
+        r for r in rows
+        if r.get("文字遣い種別") == "新字新仮名"
+        and r.get("役割フラグ") == "著者"
+        and r.get("分類番号", "").startswith("NDC 91")
+        and r.get("テキストファイルURL")
+        and r["テキストファイルURL"] not in known
+    ]
+    random.Random(0).shuffle(cand)
+    picked, per_author = [], {}
+    for r in cand:
+        if len(picked) >= AOZORA_TARGET - len(AOZORA_WORKS):
+            break
+        pid = r.get("人物ID", "")
+        if per_author.get(pid, 0) >= 2:
+            continue
+        per_author[pid] = per_author.get(pid, 0) + 1
+        picked.append((r["テキストファイルURL"],
+                       f"{r['作品名']}（{r.get('姓', '')}{r.get('名', '')}）"))
+    log(f"青空文庫 目録: {len(rows):,} 行 → 追加候補 {len(picked)} 作品")
+    return picked
+
+
 def collect_aozora():
     log("\n【青空文庫】収集開始")
     log(f"{'作品名':<30} {'文字数':>10} {'状態'}")
     log("-" * 55)
 
+    try:
+        works = AOZORA_WORKS + aozora_index_works()
+    except Exception as e:
+        log(f"目録の取得に失敗、厳選リストのみ使う: {e}")
+        works = AOZORA_WORKS
+
+    cached = {c["key"]: c["text"] for c in load_cache() if c["kind"] == "aozora"}
     results = []
-    for url, title in AOZORA_WORKS:
+    for url, title in works:
+        if url in cached:
+            text = cached[url]
+            results.append({"title": title, "text": text, "chars": len(text), "ok": True})
+            log(f"{title:<30} {len(text):>10,}  = キャッシュ")
+            continue
         try:
             raw = fetch_aozora(url)
             text = clean_aozora(raw)
             n = len(text)
+            if n < AOZORA_MIN_CHARS and (url, title) not in AOZORA_WORKS:
+                log(f"{title:<30} {n:>10,}  - 短いので省略")
+                time.sleep(AOZORA_SLEEP)
+                continue
+            append_cache("aozora", url, text)
             results.append({"title": title, "text": text, "chars": n, "ok": True})
             log(f"{title:<30} {n:>10,}  ✓")
         except Exception as e:
@@ -274,7 +355,7 @@ def collect_aozora():
         time.sleep(AOZORA_SLEEP)
 
     ok = [r for r in results if r["ok"]]
-    log(f"\n青空文庫: {len(ok)}/{len(AOZORA_WORKS)} 作品取得, "
+    log(f"\n青空文庫: {len(ok)}/{len(works)} 作品取得, "
         f"合計 {sum(r['chars'] for r in ok):,} 文字")
     return results
 
@@ -402,6 +483,14 @@ def collect_wikipedia():
 
     results = []
     seen = set()
+    for c in load_cache():
+        if c["kind"] == "wiki" and c["key"] not in seen:
+            seen.add(c["key"])
+            results.append({"title": c["key"], "text": c["text"], "chars": len(c["text"]), "ok": True})
+    if results:
+        log(f"  キャッシュから {len(results)} 記事")
+        for seed in WIKI_SEEDS:
+            pass
 
     def add(title, raw):
         if title in seen or len(results) >= WIKI_TARGET:
@@ -415,6 +504,7 @@ def collect_wikipedia():
         if len(text) < 800:
             return
         seen.add(title)
+        append_cache("wiki", title, text)
         results.append({"title": title, "text": text, "chars": len(text), "ok": True})
 
     # 1) 厳選リスト（従来の記事）
