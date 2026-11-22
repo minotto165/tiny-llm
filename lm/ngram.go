@@ -8,6 +8,12 @@ package lm
 // DefaultDiscount は Kneser-Ney の割引率 D の既定値。
 const DefaultDiscount = 0.85
 
+// DefaultHiKeep / DefaultHiWeight は 4 次以上の既定パラメータ。
+const (
+	DefaultHiKeep   = 2
+	DefaultHiWeight = 1.0
+)
+
 // Model は n-gram のカウントと補間用の統計を持つ。
 type Model struct {
 	order    int
@@ -29,25 +35,40 @@ type Model struct {
 	cont2    map[uint64]int32
 	cont2ctx map[uint64]int32 // v から始まる異なり (u,w) 数
 	cont2n1  map[uint64]int32 // v の後ろに来る異なり w 数
+
+	hiKeep   int32   // 4 次以上で残す最小出現数
+	hiWeight float64 // 4 次以上の推定を混ぜる重み (1 = そのまま)
+
+	// 4 次以上は Witten-Bell の逃げ確率で積み上げる。添字は次数。
+	hiCount []map[uint64]int32 // L-gram の出現数 (L >= 4)
+	hiTot   []map[uint64]int32 // (L-1)-gram 文脈の総出現数
+	hiDist  []map[uint64]int32 // (L-1)-gram 文脈の異なり継続数
 }
 
-// Train は ids から order 次のモデルを作る。order は 1..3。
+// Train は ids から order 次のモデルを作る。order は 1..6。
 func Train(ids []int32, v, order int) *Model {
-	return TrainWithDiscount(ids, v, order, DefaultDiscount)
+	return TrainFull(ids, v, order, DefaultDiscount, DefaultHiKeep, DefaultHiWeight)
 }
 
 // TrainWithDiscount は割引率 D を指定してモデルを作る。
 func TrainWithDiscount(ids []int32, v, order int, d float64) *Model {
+	return TrainFull(ids, v, order, d, DefaultHiKeep, DefaultHiWeight)
+}
+
+// TrainFull は 4 次以上のパラメータも指定してモデルを作る。
+func TrainFull(ids []int32, v, order int, d float64, hiKeep int32, hiWeight float64) *Model {
 	if order < 1 {
 		order = 1
 	}
-	if order > 3 {
-		order = 3
+	if order > 6 {
+		order = 6
 	}
 	m := &Model{
 		order:    order,
 		v:        v,
 		discount: d,
+		hiKeep:   hiKeep,
+		hiWeight: hiWeight,
 		uni:      make([]int32, v),
 		grams:    make(map[uint64]int32, len(ids)*2),
 		ctxs:     make(map[uint64]int32, len(ids)),
@@ -58,7 +79,11 @@ func TrainWithDiscount(ids []int32, v, order int, d float64) *Model {
 		m.uni[id]++
 		m.total++
 	}
-	for n := 2; n <= order; n++ {
+	knOrder := order
+	if knOrder > 3 {
+		knOrder = 3
+	}
+	for n := 2; n <= knOrder; n++ {
 		for i := n - 1; i < len(ids); i++ {
 			g := ids[i-n+1 : i+1]
 			m.grams[pack(g...)]++
@@ -80,7 +105,7 @@ func TrainWithDiscount(ids []int32, v, order int, d float64) *Model {
 		m.cont1[w]++
 		m.n1uni++
 	}
-	if order >= 3 {
+	if knOrder >= 3 {
 		m.cont2 = make(map[uint64]int32, len(m.grams)/2)
 		m.cont2ctx = make(map[uint64]int32, len(m.grams)/8)
 		m.cont2n1 = make(map[uint64]int32, len(m.grams)/8)
@@ -98,13 +123,83 @@ func TrainWithDiscount(ids []int32, v, order int, d float64) *Model {
 			m.cont2n1[vKey]++
 		}
 	}
+	if order >= 4 {
+		m.trainHigher(ids)
+	}
 	return m
 }
 
+// trainHigher は 4 次以上のカウントを作る。単独出現の n-gram は落として
+// メモリを抑える (落とした分は逃げ確率として低次に流れる)。
+func (m *Model) trainHigher(ids []int32) {
+	m.hiCount = make([]map[uint64]int32, m.order+1)
+	m.hiTot = make([]map[uint64]int32, m.order+1)
+	m.hiDist = make([]map[uint64]int32, m.order+1)
+	keep := m.hiKeep // これ未満の n-gram は捨てる
+	for n := 4; n <= m.order; n++ {
+		counts := make(map[uint64]int32, len(ids)/2)
+		for i := n - 1; i < len(ids); i++ {
+			counts[hashIDs(ids[i-n+1:i+1])]++
+		}
+		for k, c := range counts {
+			if c < keep {
+				delete(counts, k)
+			}
+		}
+		// 残した n-gram についてだけ文脈の統計を作る。
+		tot := make(map[uint64]int32, len(counts))
+		dist := make(map[uint64]int32, len(counts))
+		for i := n - 1; i < len(ids); i++ {
+			g := ids[i-n+1 : i+1]
+			if counts[hashIDs(g)] == 0 {
+				continue
+			}
+			ck := hashIDs(g[:n-1])
+			tot[ck]++
+			dist[ck]++
+		}
+		m.hiCount[n], m.hiTot[n], m.hiDist[n] = counts, tot, dist
+	}
+}
+
+// hashIDs は id 列を 64bit に畳む (個数も混ぜるので次数をまたいでも衝突しない)。
+func hashIDs(ids []int32) uint64 {
+	h := uint64(len(ids)) * 0x9e3779b97f4a7c15
+	for _, id := range ids {
+		h ^= uint64(uint32(id))
+		h *= 0x100000001b3
+		h ^= h >> 29
+	}
+	return h
+}
+
 // Prob は文脈 ctx の後に w が来る確率を返す。ctx は order-1 個まで。
+// 3 次までは Kneser-Ney、4 次以上は Witten-Bell の逃げ確率で積み上げる。
 func (m *Model) Prob(ctx []int32, w int32) float64 {
 	if len(ctx) > m.order-1 {
 		ctx = ctx[len(ctx)-(m.order-1):]
+	}
+	p := m.knProb(ctx, w)
+	for n := 4; n <= m.order && n-1 <= len(ctx); n++ {
+		sub := ctx[len(ctx)-(n-1):]
+		h := hashIDs(sub)
+		c := m.hiTot[n][h]
+		if c == 0 {
+			continue
+		}
+		t := m.hiDist[n][h]
+		cw := m.hiCount[n][hashIDs(append(append([]int32{}, sub...), w))]
+		k := float64(c) + float64(t)
+		hp := float64(cw)/k + float64(t)/k*p
+		p += m.hiWeight * (hp - p)
+	}
+	return p
+}
+
+// knProb は 3 次までの Kneser-Ney 補間。
+func (m *Model) knProb(ctx []int32, w int32) float64 {
+	if len(ctx) > 2 {
+		ctx = ctx[len(ctx)-2:]
 	}
 	p := m.baseProb(w)
 	for k := 1; k <= len(ctx); k++ {

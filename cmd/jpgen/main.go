@@ -19,11 +19,13 @@ func main() {
 	inPath := flag.String("in", "testdata/input.txt", "corpus file")
 	dictPath := flag.String("dict", "testdata/dic.txt", "vocabulary (JSON array)")
 	mergesPath := flag.String("merges", "testdata/merges.txt", "merge rules")
-	order := flag.Int("order", 2, "Markov order (1..3)")
+	order := flag.Int("order", 2, "Markov order (1..6)")
 	n := flag.Int("n", 80, "number of tokens to generate")
 	temp := flag.Float64("temp", 0.8, "sampling temperature (0 = greedy)")
 	topK := flag.Int("topk", 40, "sample from the top K candidates (0 = all)")
 	repeat := flag.Float64("repeat", 1.15, "penalty on recently used tokens (1 = off)")
+	hiKeep := flag.Int("hikeep", lm.DefaultHiKeep, "minimum count kept for 4+-grams")
+	hiWeight := flag.Float64("hiweight", lm.DefaultHiWeight, "weight of the 4+-gram estimate")
 	seed := flag.Int64("seed", 1, "random seed")
 	prompt := flag.String("prompt", "", "prompt text")
 	flag.Parse()
@@ -41,7 +43,7 @@ func main() {
 		log.Fatal(err)
 	}
 	model := tokenizer.NewModel(vocab, merges)
-	m := lm.Train(model.Encode(string(src)), len(vocab), *order)
+	m := lm.TrainFull(model.Encode(string(src)), len(vocab), *order, lm.DefaultDiscount, int32(*hiKeep), *hiWeight)
 
 	out := model.Encode(*prompt)
 	probs := make([]float64, len(vocab))

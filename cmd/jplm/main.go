@@ -19,8 +19,10 @@ func main() {
 	minCount := flag.Int("mincount", 2, "minimum pair frequency to merge")
 	minChar := flag.Int("minchar", 50, "minimum rune frequency for a base token")
 	batch := flag.Int("batch", 200, "merges applied per counting pass")
-	order := flag.Int("order", 2, "Markov order (1..3)")
+	order := flag.Int("order", 2, "Markov order (1..6)")
 	discountFlag := flag.Float64("discount", lm.DefaultDiscount, "Kneser-Ney discount D")
+	hiKeep := flag.Int("hikeep", lm.DefaultHiKeep, "minimum count kept for 4+-grams")
+	hiWeight := flag.Float64("hiweight", lm.DefaultHiWeight, "weight of the 4+-gram estimate")
 	holdout := flag.Float64("holdout", 0.05, "tail fraction held out for BPB")
 	evalPath := flag.String("eval", "", "separate evaluation file (trains on the whole -in file)")
 	quiet := flag.Bool("quiet", false, "suppress progress logs")
@@ -65,7 +67,7 @@ func main() {
 	tokDur := time.Since(t0)
 
 	t1 := time.Now()
-	m := lm.TrainWithDiscount(headIDs, len(res.Vocab), *order, *discountFlag)
+	m := lm.TrainFull(headIDs, len(res.Vocab), *order, *discountFlag, int32(*hiKeep), *hiWeight)
 	bits, unk := 0.0, 0
 	for i, id := range tailIDs {
 		from := i - (*order - 1)
