@@ -60,8 +60,8 @@ func TrainFull(ids []int32, v, order int, d float64, hiKeep int32, hiWeight floa
 	if order < 1 {
 		order = 1
 	}
-	if order > 6 {
-		order = 6
+	if order > 10 {
+		order = 10
 	}
 	m := &Model{
 		order:    order,
