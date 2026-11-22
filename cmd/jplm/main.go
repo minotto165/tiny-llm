@@ -15,10 +15,10 @@ import (
 
 func main() {
 	inPath := flag.String("in", "testdata/input.txt", "corpus file")
-	vocabSize := flag.Int("vocab", 8000, "tokenizer vocabulary size")
+	vocabSize := flag.Int("vocab", 12000, "tokenizer vocabulary size")
 	minCount := flag.Int("mincount", 2, "minimum pair frequency to merge")
 	minChar := flag.Int("minchar", 50, "minimum rune frequency for a base token")
-	batch := flag.Int("batch", 2000, "merges applied per counting pass")
+	batch := flag.Int("batch", 200, "merges applied per counting pass")
 	order := flag.Int("order", 2, "Markov order (1..3)")
 	holdout := flag.Float64("holdout", 0.05, "tail fraction held out for BPB")
 	quiet := flag.Bool("quiet", false, "suppress progress logs")
