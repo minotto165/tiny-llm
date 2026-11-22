@@ -206,6 +206,60 @@ def strip_heading_lines(text):
     return "\n".join(l for l in text.split("\n") if l.strip() not in WIKI_HEADING_WORDS)
 
 
+# 行単位のノイズ判定（Wikipedia のスタッフ表・受賞歴・一覧に対処）
+ASCII_CHAR_RE = re.compile(r"[A-Za-z0-9]")
+SENT_END_RE   = re.compile(r"[。！？…」』）)]$")
+KEY_LINE_RE   = re.compile(r"^[^。]{1,18}[：:][^。]{0,50}$")      # 制作：J.C.STAFF
+TITLE_LINE_RE = re.compile(r"^[『「【（(][^。]{0,40}[』」】）)]$")  # 『作品名』だけの行
+NAME_LINE_RE  = re.compile(r"^[^\s（）]{1,12}（[ぁ-んァ-ヶー\s]+）$")  # 秋津信吾（あきつ しんご）
+NOISE_PREFIX  = ("演 -", "声 -", "作 -", "歌 -", "※", "◆", "■", "→")
+
+
+def noisy_line(line):
+    """本文ではない行（表組み・一覧・メタ情報）かどうか。"""
+    if len(line) >= 6:
+        ascii_chars = sum(1 for c in line if ASCII_CHAR_RE.match(c))
+        if ascii_chars > len(line) * 0.5:
+            return True
+    if line.endswith("、"):
+        return True
+    if KEY_LINE_RE.match(line) or TITLE_LINE_RE.match(line) or NAME_LINE_RE.match(line):
+        return True
+    if line.startswith(NOISE_PREFIX):
+        return True
+    # 文末記号が無く、短い行（見出し・箇条書きの断片）
+    if not SENT_END_RE.search(line) and len(line) < 30:
+        return True
+    return False
+
+
+# 表組み・クレジット・一覧に特有の行
+CREDIT_LINE_RE = re.compile(
+    r"^(作詞|作曲|編曲|原作|脚本|監督|出演|声|演|歌|制作|製作|発売|販売|"
+    r"レーベル|規格品番|主題歌|挿入歌|キャスト|スタッフ|音楽|プロデュース|配給|上映時間)")
+JUNK_TOKEN_RE  = re.compile(r"(ファイル:|Category:|画像:|Portal:|Wikipedia:|Template:|Help:| → |←|／|http)")
+KATAKANA_RE    = re.compile(r"[\u30a0-\u30ff]")
+
+
+def junk_line(line):
+    """Wikipedia の表組み・クレジット・一覧の行かどうか（noisy_line より強い）。"""
+    if CREDIT_LINE_RE.match(line):
+        return True
+    if JUNK_TOKEN_RE.search(line):
+        return True
+    if " - " in line and "。" not in line:
+        return True
+    if re.match(r"^[『「【].*[』」】]$", line) and "。" not in line:
+        return True
+    kata = len(KATAKANA_RE.findall(line))
+    ascii_chars = sum(1 for c in line if ASCII_CHAR_RE.match(c))
+    if kata + ascii_chars > len(line) * 0.55:
+        return True
+    if not re.search(r"[。！？…]", line) and len(line) < 40:
+        return True
+    return False
+
+
 def clean_corpus(text):
     """収集後のコーパスを行単位で清掃する。
 
@@ -214,6 +268,7 @@ def clean_corpus(text):
     - ルビの残り (｜) を落とす
     - 日本語を含まない行 (URL・記号・数字だけの行) を落とす
     - URL を含む行 (Wikipedia の出典・外部リンク) を落とす
+    - 表組み・一覧・メタ情報の行 (noisy_line) を落とす
     """
     out = []
     for line in text.split("\n"):
@@ -229,8 +284,157 @@ def clean_corpus(text):
             continue
         if "://" in line:
             continue
+        if noisy_line(line) or junk_line(line):
+            continue
         out.append(line)
     return "\n".join(out)
+
+
+# ─────────────────────────────────────────────
+# 青空文庫 作品リスト
+#   (zip_url, タイトル表示名)
+# ─────────────────────────────────────────────
+AOZORA_WORKS = [
+    # 夏目漱石
+    ("https://www.aozora.gr.jp/cards/000148/files/789_ruby_5639.zip",  "吾輩は猫である（漱石）"),
+    ("https://www.aozora.gr.jp/cards/000148/files/752_ruby_2438.zip",  "坊っちゃん（漱石）"),
+    ("https://www.aozora.gr.jp/cards/000148/files/773_ruby_5968.zip",   "こころ（漱石）"),
+    ("https://www.aozora.gr.jp/cards/000148/files/794_ruby_4237.zip",  "三四郎（漱石）"),
+    ("https://www.aozora.gr.jp/cards/000148/files/1746_ruby_18324.zip",  "それから（漱石）"),
+    # 芥川龍之介
+    ("https://www.aozora.gr.jp/cards/000879/files/127_ruby_150.zip",   "羅生門（芥川）"),
+    ("https://www.aozora.gr.jp/cards/000879/files/42_ruby_154.zip",   "鼻（芥川）"),
+    ("https://www.aozora.gr.jp/cards/000879/files/55_ruby_1843.zip",   "芋粥（芥川）"),
+    ("https://www.aozora.gr.jp/cards/000879/files/179_ruby_168.zip", "藪の中（芥川）"),
+    ("https://www.aozora.gr.jp/cards/000879/files/45761_ruby_38235.zip",  "河童（芥川）"),
+    ("https://www.aozora.gr.jp/cards/000879/files/60_ruby_821.zip", "地獄変（芥川）"),
+    # 森鴎外
+    ("https://www.aozora.gr.jp/cards/000129/files/58126_ruby_73643.zip",  "舞姫（鴎外）"),
+    ("https://www.aozora.gr.jp/cards/000129/files/691_ruby_15351.zip","高瀬舟（鴎外）"),
+    ("https://www.aozora.gr.jp/cards/000129/files/689_ruby_23256.zip",  "山椒大夫（鴎外）"),
+    # 太宰治
+    ("https://www.aozora.gr.jp/cards/000035/files/1567_ruby_4948.zip", "走れメロス（太宰）"),
+    ("https://www.aozora.gr.jp/cards/000035/files/1565_ruby_8220.zip",  "斜陽（太宰）"),
+    ("https://www.aozora.gr.jp/cards/000035/files/301_ruby_5915.zip",  "人間失格（太宰）"),
+    # 宮沢賢治
+    ("https://www.aozora.gr.jp/cards/000081/files/456_ruby_145.zip",  "銀河鉄道の夜（賢治）"),
+    ("https://www.aozora.gr.jp/cards/000081/files/462_ruby_716.zip",  "風の又三郎（賢治）"),
+    ("https://www.aozora.gr.jp/cards/000081/files/43737_ruby_19028.zip","注文の多い料理店（賢治）"),
+    # 樋口一葉
+    ("https://www.aozora.gr.jp/cards/000064/files/389_ruby_15296.zip",  "たけくらべ（一葉）"),
+    ("https://www.aozora.gr.jp/cards/000064/files/387_ruby_15292.zip",  "にごりえ（一葉）"),
+    # 島崎藤村
+    ("https://www.aozora.gr.jp/cards/000158/files/1502_ruby_24534.zip", "破戒（藤村）"),
+    # 志賀直哉
+    ("https://www.aozora.gr.jp/cards/000083/files/1388_ruby_17236.zip", "暗夜行路（志賀）"),
+    # 幸田露伴
+    ("https://www.aozora.gr.jp/cards/000051/files/43289_ruby_16762.zip",  "五重塔（露伴）"),
+]
+
+# ─────────────────────────────────────────────
+# Wikipedia: 取得するカテゴリ・記事タイトルリスト
+# ─────────────────────────────────────────────
+WIKI_TITLES = [
+    # 日本史
+    "江戸時代", "明治維新", "大正時代", "昭和時代", "平安時代", "鎌倉時代",
+    "室町時代", "戦国時代_(日本)", "江戸幕府", "徳川家康", "豊臣秀吉",
+    "織田信長", "坂本龍馬", "西郷隆盛", "伊藤博文", "福沢諭吉",
+    "聖徳太子", "源頼朝", "足利尊氏", "北条時宗", "上杉謙信", "武田信玄",
+    # 地理・都市
+    "東京都", "大阪府", "京都府", "北海道", "沖縄県", "富士山",
+    "琵琶湖", "瀬戸内海", "日本アルプス", "本州", "四国", "九州",
+    "東海道", "中山道", "奥州街道", "長崎街道",
+    # 文化・芸術
+    "能楽", "歌舞伎", "文楽", "茶道", "華道", "書道", "俳句",
+    "和歌", "短歌", "連歌", "狂言", "落語", "講談", "浪曲",
+    "日本画", "浮世絵", "蒔絵", "陶磁器", "漆器",
+    "日本建築", "神社建築", "寺院建築", "城郭",
+    # 科学・技術
+    "量子力学", "相対性理論", "進化論", "DNA", "光合成",
+    "人工知能", "機械学習", "深層学習", "自然言語処理",
+    "インターネット", "半導体", "新幹線", "リニアモーターカー",
+    "宇宙開発", "国際宇宙ステーション", "ブラックホール",
+    # 文学・思想
+    "夏目漱石", "芥川龍之介", "太宰治", "川端康成", "三島由紀夫",
+    "松尾芭蕉", "与謝野晶子", "正岡子規", "石川啄木",
+    "儒教", "仏教", "神道", "禅", "武士道",
+    # 社会・政治
+    "日本国憲法", "民主主義", "国会_(日本)", "内閣総理大臣",
+    "日本の経済", "高度経済成長", "バブル景気", "少子高齢化",
+    "社会保障", "環境問題", "地球温暖化", "再生可能エネルギー",
+    # 自然・生物
+    "桜", "竹", "松", "梅", "菊", "蓮",
+    "タヌキ", "キツネ", "ニホンザル", "ツル", "カラス",
+    "日本海", "太平洋", "地震", "台風", "津波", "火山",
+    # スポーツ・娯楽
+    "相撲", "柔道", "剣道", "空手", "弓道", "合気道",
+    "野球", "サッカー", "バスケットボール",
+    "将棋", "囲碁", "花札", "かるた",
+    # 食文化
+    "日本料理", "寿司", "天ぷら", "そば", "うどん", "ラーメン",
+    "味噌", "醤油", "豆腐", "納豆", "日本酒", "緑茶",
+    # 現代文化
+    "アニメ", "漫画", "ゲーム", "ラノベ", "ボカロ",
+    "東京ディズニーリゾート", "秋葉原", "渋谷", "新宿",
+]
+
+
+# ─────────────────────────────────────────────
+# ユーティリティ
+# ─────────────────────────────────────────────
+def log(msg):
+    print(msg, flush=True)
+
+def fetch_bytes(url, timeout=30, retries=5):
+    """429/5xx は Retry-After を見て待ち、指数バックオフで再試行する。"""
+    headers = {"User-Agent": "JapaneseCorpusCollector/1.0 (educational use)"}
+    delay = 2.0
+    for attempt in range(retries):
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return r.read()
+        except urllib.error.HTTPError as e:
+            if e.code not in (429, 500, 502, 503, 504) or attempt == retries - 1:
+                raise
+            wait = delay
+            retry_after = e.headers.get("Retry-After") if e.headers else None
+            if retry_after:
+                try:
+                    wait = max(wait, float(retry_after))
+                except ValueError:
+                    pass
+            wait = min(wait, 30.0)
+            log(f"    HTTP {e.code}: {wait:.0f} 秒待って再試行 ({attempt + 1}/{retries - 1})")
+            time.sleep(wait)
+            delay = min(delay * 2, 60)
+        except (urllib.error.URLError, TimeoutError) as e:
+            if attempt == retries - 1:
+                raise
+            log(f"    {e}: {delay:.0f} 秒待って再試行 ({attempt + 1}/{retries - 1})")
+            time.sleep(delay)
+            delay = min(delay * 2, 60)
+    raise RuntimeError("unreachable")
+
+def fetch_text(url, encoding="utf-8", timeout=30):
+    return fetch_bytes(url, timeout).decode(encoding, errors="replace")
+
+# 日本語 (ひらがな・カタカナ・漢字・々〆) を含む行だけを残すための判定。
+CJK_RE = re.compile(r"[\u3041-\u309f\u30a1-\u30fa\u4e00-\u9fff々〆ヵヶ]")
+
+# clean_wikitext が落としきれなかった見出し語（過去のコーパスの再清掃用）。
+WIKI_HEADING_WORDS = set("""脚注 出典 注釈 参考文献 関連項目 関連文献 外部リンク 概要 歴史 沿革 特徴 来歴 経歴 生涯 人物
+登場人物 あらすじ ストーリー 解説 評価 受賞歴 作品 小説 漫画 映画 アニメ テレビ ラジオ ゲーム 舞台 音楽 主題歌
+シングル アルバム ディスコグラフィ ディスコグラフィー 収録曲 収録内容 出演 出演者 キャスト スタッフ メンバー
+パーソナリティ ゲスト 書籍 単行本 書誌情報 仕様 性能 諸元 要目 設計 開発 運用 運用国 採用国 艦歴 機体 武装
+エンジン 分類 備考 その他 ギャラリー 不具合 主な機能 放送時間 放送局 各話リスト エピソード タイアップ
+大会概要 試合結果 イベント バリエーション 各型 派生型 概説 背景 名称 呼称 交通 地理 教育 文化
+脚注・出典 注記 註釈 関連作品 関連人物 出典・脚注 中略 （中略）""".split())
+
+
+def strip_heading_lines(text):
+    """見出し語だけの行を取り除く。"""
+    return "\n".join(l for l in text.split("\n") if l.strip() not in WIKI_HEADING_WORDS)
 
 
 # ─────────────────────────────────────────────
