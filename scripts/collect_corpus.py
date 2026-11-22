@@ -48,7 +48,7 @@ WIKI_SLEEP   = 1.0
 # Wikipedia: 1 リクエストで取る記事数 (API の上限 50)
 WIKI_BATCH_LIMIT = 50
 # Wikipedia: 目標記事数 (厳選リスト + 全記事空間からの追加分)
-WIKI_TARGET  = 1200
+WIKI_TARGET  = 3000
 
 # ─────────────────────────────────────────────
 # 青空文庫 作品リスト

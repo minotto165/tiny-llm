@@ -15,7 +15,7 @@ import (
 
 func main() {
 	inPath := flag.String("in", "testdata/input.txt", "corpus file")
-	vocabSize := flag.Int("vocab", 12000, "tokenizer vocabulary size")
+	vocabSize := flag.Int("vocab", 18000, "tokenizer vocabulary size")
 	minCount := flag.Int("mincount", 2, "minimum pair frequency to merge")
 	minChar := flag.Int("minchar", 50, "minimum rune frequency for a base token")
 	batch := flag.Int("batch", 200, "merges applied per counting pass")
