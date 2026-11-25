@@ -17,6 +17,7 @@ func LM(args []string) {
 	inPath := fs.String("in", "testdata/input.txt", "コーパス")
 	order := fs.Int("order", 3, "マルコフ次数 (1..10)")
 	evalPath := fs.String("eval", "", "別ファイルで評価する（-in 全体で学習）")
+	modelPath := fs.String("model", "", "保存済み Transformer を評価する (tfm.bin)")
 	holdout := fs.Float64("holdout", 0.05, "末尾から評価に回す割合")
 	fs.Parse(args)
 
@@ -40,6 +41,11 @@ func LM(args []string) {
 		offs := tokenizer.RuneOffsets(src)
 		cut := offs[int(float64(len(offs)-1)*(1-*holdout))]
 		head, tail = src[:cut], string(src[cut:])
+	}
+
+	if *modelPath != "" {
+		evalTfm(*modelPath, tail)
+		return
 	}
 
 	t0 := time.Now()

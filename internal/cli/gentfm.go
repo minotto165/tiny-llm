@@ -45,7 +45,7 @@ func genTfm(path, prompt string, n int, temp float64, seed int64, tok *tokenizer
 		c := m.Forward(out[from:])
 		t := c.T
 		row := append([]float64(nil), c.Logits.D[(t-1)*c.Logits.C:t*c.Logits.C]...)
-		id := sampleLogits(row, temp, 40, rng)
+		id := sampleLogits(row, temp, 40, len(tokenizer.SpecialTokens), rng)
 		out = append(out, id)
 		fmt.Print(tok.Vocab[id])
 	}
@@ -53,11 +53,11 @@ func genTfm(path, prompt string, n int, temp float64, seed int64, tok *tokenizer
 }
 
 // sampleLogits はロジットから 1 トークンをサンプルする。
-func sampleLogits(logits []float64, temp float64, k int, rng *rand.Rand) int32 {
+func sampleLogits(logits []float64, temp float64, k, skip int, rng *rand.Rand) int32 {
 	if temp <= 0 {
-		best := 0
-		for i, v := range logits {
-			if v > logits[best] {
+		best := skip
+		for i := skip; i < len(logits); i++ {
+			if logits[i] > logits[best] {
 				best = i
 			}
 		}
@@ -66,9 +66,9 @@ func sampleLogits(logits []float64, temp float64, k int, rng *rand.Rand) int32 {
 	for i := range logits {
 		logits[i] /= temp
 	}
-	idx := make([]int, len(logits))
-	for i := range idx {
-		idx[i] = i
+	idx := make([]int, 0, len(logits)-skip)
+	for i := skip; i < len(logits); i++ {
+		idx = append(idx, i)
 	}
 	if k > 0 && k < len(idx) {
 		sort.Slice(idx, func(a, b int) bool { return logits[idx[a]] > logits[idx[b]] })
