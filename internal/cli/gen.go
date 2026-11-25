@@ -30,12 +30,10 @@ func Gen(args []string) {
 	temp := fs.Float64("temp", 0.8, "温度 (0 = 貪欲)")
 	order := fs.Int("order", 2, "マルコフ次数 (1..10)")
 	seed := fs.Int64("seed", 1, "乱数シード")
+	savePath := fs.String("save", "", "学習した n-gram モデルを保存する")
+	loadPath := fs.String("load", "", "保存済みモデルを読み込む (-in は不要)")
 	fs.Parse(args)
 
-	src, err := os.ReadFile(*inPath)
-	if err != nil {
-		log.Fatal(err)
-	}
 	vocab, err := tokenizer.ReadVocab(dictPath)
 	if err != nil {
 		log.Fatal(err)
@@ -45,11 +43,37 @@ func Gen(args []string) {
 		log.Fatal(err)
 	}
 	model := tokenizer.NewModel(vocab, merges)
-	ids := model.Encode(string(src))
-	t0 := time.Now()
-	m := lm.TrainFull(ids, len(vocab), *order, lm.DefaultDiscount,
-		hiKeepFor(*order), hiWeightFor(*order))
-	log.Printf("lm: order %d, %d tokens, %d grams, %s", *order, len(ids), m.Grams(), time.Since(t0).Round(time.Millisecond))
+
+	var m *lm.Model
+	mdlOrder := *order
+	if *loadPath != "" {
+		t0 := time.Now()
+		m, err = lm.LoadFile(*loadPath)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if m.Vocab() != len(vocab) {
+			log.Fatalf("model vocab %d != dict vocab %d", m.Vocab(), len(vocab))
+		}
+		mdlOrder = m.Order()
+		log.Printf("lm: loaded %s (order %d, %d grams) in %s", *loadPath, mdlOrder, m.Grams(), time.Since(t0).Round(time.Millisecond))
+	} else {
+		src, err := os.ReadFile(*inPath)
+		if err != nil {
+			log.Fatal(err)
+		}
+		ids := model.Encode(string(src))
+		t0 := time.Now()
+		m = lm.TrainFull(ids, len(vocab), mdlOrder, lm.DefaultDiscount, hiKeepFor(mdlOrder), hiWeightFor(mdlOrder))
+		log.Printf("lm: order %d, %d tokens, %d grams, %s", mdlOrder, len(ids), m.Grams(), time.Since(t0).Round(time.Millisecond))
+		if *savePath != "" {
+			t0 := time.Now()
+			if err := m.SaveFile(*savePath); err != nil {
+				log.Fatal(err)
+			}
+			log.Printf("saved: %s in %s", *savePath, time.Since(t0).Round(time.Millisecond))
+		}
+	}
 
 	// 生成は 1 トークンずつ標準出力へ流す（トークンはルーン境界で切れているので連結可能）。
 	out := model.Encode(*prompt)
@@ -57,7 +81,7 @@ func Gen(args []string) {
 	probs := make([]float64, len(vocab))
 	rng := rand.New(rand.NewSource(*seed))
 	for i := 0; i < *n; i++ {
-		from := len(out) - (*order - 1)
+		from := len(out) - (mdlOrder - 1)
 		if from < 0 {
 			from = 0
 		}

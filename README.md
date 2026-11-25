@@ -17,6 +17,9 @@ $ python3 scripts/collect_corpus.py    # 青空文庫と Wikipedia から input.
 |---|---|
 | `tok` | `-in` `-vocab` |
 | `lm` | `-in` `-order` `-eval` `-holdout` |
-| `gen` | `-in` `-prompt` `-n` `-temp` `-order` `-seed` |
+| `gen` | `-in` `-prompt` `-n` `-temp` `-order` `-seed` `-save` `-load` |
+
+`gen -save model.bin` で n-gram を保存でき、次回は `gen -load model.bin` で
+トークン化とカウントを省ける（3 分 → 1 秒）。
 
 `output.txt` は `/` 区切り、`dic.txt` は語彙 (JSON 配列)、`merges.txt` は併合規則。`/` を除くと入力に戻る。

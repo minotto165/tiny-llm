@@ -1,6 +1,7 @@
 package lm
 
 import (
+	"bytes"
 	"math"
 	"testing"
 )
@@ -51,5 +52,30 @@ func TestTrigramSumsToOne(t *testing.T) {
 	}
 	if math.Abs(sum-1) > 1e-9 {
 		t.Fatalf("sum=%v", sum)
+	}
+}
+
+func TestModelSaveLoad(t *testing.T) {
+	ids := []int32{5, 6, 7, 8, 5, 6, 7, 9, 5, 6, 7, 8, 10}
+	m := TrainFull(ids, 11, 4, DefaultDiscount, 1, 0.5)
+
+	var buf bytes.Buffer
+	if err := m.Save(&buf); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := Load(&buf)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.Order() != m.Order() || got.Vocab() != m.Vocab() || got.Grams() != m.Grams() {
+		t.Fatalf("header mismatch: %+v", got)
+	}
+	for _, ctx := range [][]int32{{5, 6}, {5, 6, 7}, {7}, {}} {
+		for w := int32(0); w < 11; w++ {
+			a, b := m.Prob(ctx, w), got.Prob(ctx, w)
+			if math.Abs(a-b) > 1e-12 {
+				t.Fatalf("Prob(%v, %d) = %v, loaded %v", ctx, w, a, b)
+			}
+		}
 	}
 }
