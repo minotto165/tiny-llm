@@ -1,6 +1,6 @@
 // jpgen は n-gram マルコフ連鎖で続きを生成する。
 // 学習済みの dic.txt / merges.txt を使い、input.txt で n-gram を数える。
-package main
+package cli
 
 import (
 	"flag"
@@ -16,21 +16,22 @@ import (
 	"github.com/minotto165/tiny-llm/tokenizer"
 )
 
-func main() {
-	inPath := flag.String("in", "testdata/input.txt", "corpus file")
-	dictPath := flag.String("dict", "testdata/dic.txt", "vocabulary (JSON array)")
-	mergesPath := flag.String("merges", "testdata/merges.txt", "merge rules")
-	order := flag.Int("order", 2, "Markov order (1..6)")
-	n := flag.Int("n", 80, "number of tokens to generate")
-	temp := flag.Float64("temp", 0.8, "sampling temperature (0 = greedy)")
-	topK := flag.Int("topk", 40, "sample from the top K candidates (0 = all)")
-	repeat := flag.Float64("repeat", 1.15, "penalty on recently used tokens (1 = off)")
-	hiKeep := flag.Int("hikeep", lm.DefaultHiKeep, "minimum count kept for 4+-grams")
-	hiWeight := flag.Float64("hiweight", lm.DefaultHiWeight, "weight of the 4+-gram estimate")
-	seed := flag.Int64("seed", 1, "random seed")
-	balance := flag.Bool("balance", true, "括弧の対応を保つ（開いた括弧を閉じる方向にバイアス）")
-	prompt := flag.String("prompt", "", "prompt text")
-	flag.Parse()
+func Gen(args []string) {
+	fs := flag.NewFlagSet("gen", flag.ExitOnError)
+	inPath := fs.String("in", "testdata/input.txt", "corpus file")
+	dictPath := fs.String("dict", "testdata/dic.txt", "vocabulary (JSON array)")
+	mergesPath := fs.String("merges", "testdata/merges.txt", "merge rules")
+	order := fs.Int("order", 2, "Markov order (1..10)")
+	n := fs.Int("n", 80, "number of tokens to generate")
+	temp := fs.Float64("temp", 0.8, "sampling temperature (0 = greedy)")
+	topK := fs.Int("topk", 40, "sample from the top K candidates (0 = all)")
+	repeat := fs.Float64("repeat", 1.15, "penalty on recently used tokens (1 = off)")
+	hiKeep := fs.Int("hikeep", lm.DefaultHiKeep, "minimum count kept for 4+-grams")
+	hiWeight := fs.Float64("hiweight", lm.DefaultHiWeight, "weight of the 4+-gram estimate")
+	seed := fs.Int64("seed", 1, "random seed")
+	balance := fs.Bool("balance", true, "括弧の対応を保つ（開いた括弧を閉じる方向にバイアス）")
+	prompt := fs.String("prompt", "", "prompt text")
+	fs.Parse(args)
 
 	src, err := os.ReadFile(*inPath)
 	if err != nil {

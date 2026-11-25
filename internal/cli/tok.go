@@ -1,5 +1,5 @@
 // Command jptok はコーパスを BPE で分割し、分割結果・語彙・併合規則を書き出す。
-package main
+package cli
 
 import (
 	"flag"
@@ -12,18 +12,19 @@ import (
 	"github.com/minotto165/tiny-llm/tokenizer"
 )
 
-func main() {
-	inPath := flag.String("in", "testdata/input.txt", "input text file (UTF-8)")
-	outPath := flag.String("out", "testdata/output.txt", "segmented output file")
-	dictPath := flag.String("dict", "testdata/dic.txt", "vocabulary (JSON) output file")
-	mergesPath := flag.String("merges", "testdata/merges.txt", "merge rules (priority order) output file")
-	vocabSize := flag.Int("vocab", 32000, "target vocabulary size (merges stop here)")
-	minCount := flag.Int("mincount", 2, "minimum pair frequency to merge")
-	minChar := flag.Int("minchar", 50, "minimum rune frequency for a base token (0 = all; rarer runes become <unk>)")
-	batch := flag.Int("batch", 200, "merges applied per counting pass (speed/quality knob)")
-	holdout := flag.Float64("holdout", 0, "fraction of the tail held out for tokens/char (0 = off)")
-	quiet := flag.Bool("quiet", false, "suppress progress logs")
-	flag.Parse()
+func Tok(args []string) {
+	fs := flag.NewFlagSet("tok", flag.ExitOnError)
+	inPath := fs.String("in", "testdata/input.txt", "input text file (UTF-8)")
+	outPath := fs.String("out", "testdata/output.txt", "segmented output file")
+	dictPath := fs.String("dict", "testdata/dic.txt", "vocabulary (JSON) output file")
+	mergesPath := fs.String("merges", "testdata/merges.txt", "merge rules (priority order) output file")
+	vocabSize := fs.Int("vocab", 32000, "target vocabulary size (merges stop here)")
+	minCount := fs.Int("mincount", 2, "minimum pair frequency to merge")
+	minChar := fs.Int("minchar", 50, "minimum rune frequency for a base token (0 = all; rarer runes become <unk>)")
+	batch := fs.Int("batch", 200, "merges applied per counting pass (speed/quality knob)")
+	holdout := fs.Float64("holdout", 0, "fraction of the tail held out for tokens/char (0 = off)")
+	quiet := fs.Bool("quiet", false, "suppress progress logs")
+	fs.Parse(args)
 
 	src, err := os.ReadFile(*inPath)
 	if err != nil {

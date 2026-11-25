@@ -1,6 +1,6 @@
 // jplm は n-gram マルコフ連鎖言語モデルの評価コマンド。
 // 末尾 holdout を学習から外し、その BPB (bits per UTF-8 byte) を出す。
-package main
+package cli
 
 import (
 	"flag"
@@ -13,20 +13,21 @@ import (
 	"github.com/minotto165/tiny-llm/tokenizer"
 )
 
-func main() {
-	inPath := flag.String("in", "testdata/input.txt", "corpus file")
-	vocabSize := flag.Int("vocab", 32000, "tokenizer vocabulary size")
-	minCount := flag.Int("mincount", 2, "minimum pair frequency to merge")
-	minChar := flag.Int("minchar", 50, "minimum rune frequency for a base token")
-	batch := flag.Int("batch", 200, "merges applied per counting pass")
-	order := flag.Int("order", 2, "Markov order (1..6)")
-	discountFlag := flag.Float64("discount", lm.DefaultDiscount, "Kneser-Ney discount D")
-	hiKeep := flag.Int("hikeep", lm.DefaultHiKeep, "minimum count kept for 4+-grams")
-	hiWeight := flag.Float64("hiweight", lm.DefaultHiWeight, "weight of the 4+-gram estimate")
-	holdout := flag.Float64("holdout", 0.05, "tail fraction held out for BPB")
-	evalPath := flag.String("eval", "", "separate evaluation file (trains on the whole -in file)")
-	quiet := flag.Bool("quiet", false, "suppress progress logs")
-	flag.Parse()
+func LM(args []string) {
+	fs := flag.NewFlagSet("lm", flag.ExitOnError)
+	inPath := fs.String("in", "testdata/input.txt", "corpus file")
+	vocabSize := fs.Int("vocab", 32000, "tokenizer vocabulary size")
+	minCount := fs.Int("mincount", 2, "minimum pair frequency to merge")
+	minChar := fs.Int("minchar", 50, "minimum rune frequency for a base token")
+	batch := fs.Int("batch", 200, "merges applied per counting pass")
+	order := fs.Int("order", 2, "Markov order (1..10)")
+	discountFlag := fs.Float64("discount", lm.DefaultDiscount, "Kneser-Ney discount D")
+	hiKeep := fs.Int("hikeep", lm.DefaultHiKeep, "minimum count kept for 4+-grams")
+	hiWeight := fs.Float64("hiweight", lm.DefaultHiWeight, "weight of the 4+-gram estimate")
+	holdout := fs.Float64("holdout", 0.05, "tail fraction held out for BPB")
+	evalPath := fs.String("eval", "", "separate evaluation file (trains on the whole -in file)")
+	quiet := fs.Bool("quiet", false, "suppress progress logs")
+	fs.Parse(args)
 
 	src, err := os.ReadFile(*inPath)
 	if err != nil {
