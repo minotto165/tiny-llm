@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"os"
 	"sort"
+	"time"
 
 	"github.com/minotto165/tiny-llm/lm"
 	"github.com/minotto165/tiny-llm/tokenizer"
@@ -44,10 +45,15 @@ func Gen(args []string) {
 		log.Fatal(err)
 	}
 	model := tokenizer.NewModel(vocab, merges)
-	m := lm.TrainFull(model.Encode(string(src)), len(vocab), *order, lm.DefaultDiscount,
+	ids := model.Encode(string(src))
+	t0 := time.Now()
+	m := lm.TrainFull(ids, len(vocab), *order, lm.DefaultDiscount,
 		hiKeepFor(*order), hiWeightFor(*order))
+	log.Printf("lm: order %d, %d tokens, %d grams, %s", *order, len(ids), m.Grams(), time.Since(t0).Round(time.Millisecond))
 
+	// 生成は 1 トークンずつ標準出力へ流す（トークンはルーン境界で切れているので連結可能）。
 	out := model.Encode(*prompt)
+	fmt.Print(*prompt)
 	probs := make([]float64, len(vocab))
 	rng := rand.New(rand.NewSource(*seed))
 	for i := 0; i < *n; i++ {
@@ -79,9 +85,11 @@ func Gen(args []string) {
 		if sum <= 0 {
 			log.Fatal("no probability mass")
 		}
-		out = append(out, sample(probs, sum, *temp, rng))
+		id := sample(probs, sum, *temp, rng)
+		out = append(out, id)
+		fmt.Print(model.Vocab[id])
 	}
-	fmt.Println(model.Decode(out))
+	fmt.Println()
 }
 
 // sample は probs (合計 sum) から 1 つ選ぶ。temp <= 0 なら最大確率のものを返す。
