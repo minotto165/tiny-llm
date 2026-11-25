@@ -30,8 +30,9 @@ MAGIC = b"JPTF1\n"
 
 
 class Block(torch.nn.Module):
-    def __init__(self, d, f, scale):
+    def __init__(self, d, f, scale, p=0.0):
         super().__init__()
+        self.drop = torch.nn.Dropout(p)
         self.ln1g = torch.nn.Parameter(torch.ones(1, d))
         self.ln1b = torch.nn.Parameter(torch.zeros(1, d))
         self.Wq = torch.nn.Parameter(torch.randn(d, d) * 0.02)
@@ -51,13 +52,13 @@ class Block(torch.nn.Module):
 
 
 class TF(torch.nn.Module):
-    def __init__(self, vocab, ctx, d, heads, layers, ffn):
+    def __init__(self, vocab, ctx, d, heads, layers, ffn, p=0.0):
         super().__init__()
         self.vocab, self.ctx, self.d, self.heads, self.layers, self.ffn = vocab, ctx, d, heads, layers, ffn
         scale = 0.02 / math.sqrt(2 * layers)
         self.Wte = torch.nn.Parameter(torch.randn(vocab, d) * 0.02)
         self.Wpe = torch.nn.Parameter(torch.randn(ctx, d) * 0.01)
-        self.blocks = torch.nn.ModuleList([Block(d, ffn, scale) for _ in range(layers)])
+        self.blocks = torch.nn.ModuleList([Block(d, ffn, scale, p) for _ in range(layers)])
         self.lnfg = torch.nn.Parameter(torch.ones(1, d))
         self.lnfb = torch.nn.Parameter(torch.zeros(1, d))
         self.Wout = torch.nn.Parameter(torch.randn(d, vocab) * 0.02)
@@ -77,12 +78,12 @@ class TF(torch.nn.Module):
             s = q @ k.transpose(-2, -1) / math.sqrt(dh)
             s = s.masked_fill(mask, float("-inf"))
             o = (s.softmax(dim=-1) @ v).transpose(1, 2).reshape(ids.shape[0], t, self.d)
-            x = x + o @ b.Wo + b.Bo
+            x = x + b.drop(o @ b.Wo + b.Bo)
 
             a = F.layer_norm(x, (self.d,), b.ln2g[0], b.ln2b[0], 1e-5)
             pre = a @ b.W1 + b.B1
             act = 0.5 * pre * (1 + torch.tanh(math.sqrt(2 / math.pi) * (pre + 0.044715 * pre**3)))
-            x = x + act @ b.W2 + b.B2
+            x = x + b.drop(act @ b.W2 + b.B2)
         x = F.layer_norm(x, (self.d,), self.lnfg[0], self.lnfb[0], 1e-5)
         return x @ self.Wout + self.Bout
 
@@ -133,6 +134,10 @@ def main():
     ap.add_argument("--steps", type=int, default=4000)
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--lr", type=float, default=3e-4)
+    ap.add_argument("--dropout", type=float, default=0.0, help="0.1 程度を推奨")
+    ap.add_argument("--weight-decay", type=float, default=0.01)
+    ap.add_argument("--warmup", type=int, default=0, help="この step 数まで線形に lr を上げる")
+    ap.add_argument("--cosine", action="store_true", help="warmup 後を余弦減衰させる")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--parity", action="store_true", help="書き出し後に参照実装と照合する")
@@ -150,14 +155,23 @@ def main():
         ids = np.frombuffer(fh.read(4 * n), dtype="<i4")
     print(f"ids: {len(ids):,} tokens", file=sys.stderr)
 
-    model = TF(args.vocab, args.ctx, args.dim, args.heads, args.layers, args.ffn).to(args.device)
+    model = TF(args.vocab, args.ctx, args.dim, args.heads, args.layers, args.ffn, args.dropout).to(args.device)
     nparam = sum(p.numel() for p in model.parameters())
     print(f"model: {nparam/1e6:.2f}M params, device {args.device}", file=sys.stderr)
 
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, betas=(0.9, 0.95), weight_decay=0.01)
+    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, betas=(0.9, 0.95), weight_decay=args.weight_decay)
     t0 = time.time()
     data = torch.from_numpy(ids.astype(np.int64))
     for step in range(1, args.steps + 1):
+        if args.warmup > 0 and step <= args.warmup:
+            lr = args.lr * step / args.warmup
+        elif args.cosine:
+            prog = (step - args.warmup) / max(1, args.steps - args.warmup)
+            lr = args.lr * 0.5 * (1 + math.cos(math.pi * min(1.0, prog)))
+        else:
+            lr = args.lr
+        for g in opt.param_groups:
+            g["lr"] = lr
         starts = rng.integers(0, len(ids) - args.ctx - 1, size=args.batch)
         idx = torch.from_numpy(starts[:, None] + np.arange(args.ctx + 1)[None, :])
         chunk = data[idx].to(args.device)
@@ -181,6 +195,7 @@ def main():
     print(f"saved: {args.out}", file=sys.stderr)
 
     if args.parity:
+        model.eval()
         sys.path.insert(0, here)
         import tfm_ref
         cfg, _, w = tfm_ref.load(args.out)

@@ -45,26 +45,44 @@ func genTfm(path, prompt string, n int, temp float64, seed int64, tok *tokenizer
 		c := m.Forward(out[from:])
 		t := c.T
 		row := append([]float64(nil), c.Logits.D[(t-1)*c.Logits.C:t*c.Logits.C]...)
-		id := sampleLogits(row, temp, 40, len(tokenizer.SpecialTokens), rng)
+		recent := out
+		if len(recent) > repWindow {
+			recent = recent[len(recent)-repWindow:]
+		}
+		id := sampleLogits(row, temp, 40, len(tokenizer.SpecialTokens), recent, rng)
 		out = append(out, id)
 		fmt.Print(tok.Vocab[id])
 	}
 	fmt.Println()
 }
 
-// sampleLogits はロジットから 1 トークンをサンプルする。
-func sampleLogits(logits []float64, temp float64, k, skip int, rng *rand.Rand) int32 {
+const (
+	repPenalty = 1.15 // 直近 repWindow トークンの重複ペナルティ
+	repWindow  = 32
+)
+
+// sampleLogits はロジットから 1 トークンをサンプルする。recent の重複は減衰させる。
+func sampleLogits(logits []float64, temp float64, k, skip int, recent []int32, rng *rand.Rand) int32 {
+	penalize := func(i int) float64 {
+		v := logits[i] / temp
+		for _, r := range recent {
+			if int(r) == i {
+				v -= math.Log(repPenalty)
+			}
+		}
+		return v
+	}
 	if temp <= 0 {
 		best := skip
 		for i := skip; i < len(logits); i++ {
-			if logits[i] > logits[best] {
+			if penalize(i) > penalize(best) {
 				best = i
 			}
 		}
 		return int32(best)
 	}
 	for i := range logits {
-		logits[i] /= temp
+		logits[i] = penalize(i)
 	}
 	idx := make([]int, 0, len(logits)-skip)
 	for i := skip; i < len(logits); i++ {
