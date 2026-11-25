@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"os"
 	"sort"
+	"strings"
 
 	"github.com/minotto165/tiny-llm/lm"
 	"github.com/minotto165/tiny-llm/tokenizer"
@@ -27,6 +28,7 @@ func main() {
 	hiKeep := flag.Int("hikeep", lm.DefaultHiKeep, "minimum count kept for 4+-grams")
 	hiWeight := flag.Float64("hiweight", lm.DefaultHiWeight, "weight of the 4+-gram estimate")
 	seed := flag.Int64("seed", 1, "random seed")
+	balance := flag.Bool("balance", true, "括弧の対応を保つ（開いた括弧を閉じる方向にバイアス）")
 	prompt := flag.String("prompt", "", "prompt text")
 	flag.Parse()
 
@@ -55,6 +57,7 @@ func main() {
 			from = 0
 		}
 		ctx := out[from:]
+		stack := openBrackets(model.Decode(out))
 
 		sum := 0.0
 		for w := range probs {
@@ -74,6 +77,9 @@ func main() {
 			if *temp > 0 && *temp != 1 {
 				p = math.Pow(p, 1 / *temp)
 			}
+			if *balance {
+				p *= bracketBias(stack, model.Vocab[w])
+			}
 			probs[w] = p
 			sum += p
 		}
@@ -82,7 +88,60 @@ func main() {
 		}
 		out = append(out, sample(probs, sum, *temp, *topK, rng))
 	}
-	fmt.Println(model.Decode(out))
+	txt := model.Decode(out)
+	if *balance {
+		txt += closeBrackets(txt)
+	}
+	fmt.Println(txt)
+}
+
+// 括弧の対応を扱う。生成中に開いた括弧を閉じる方向へ確率を寄せ、
+// 最後に閉じ忘れを補う。
+var bracketPairs = map[rune]rune{'「': '」', '『': '』', '（': '）', '(': ')', '【': '】'}
+
+// openBrackets は閉じていない括弧を開いた順に返す。
+func openBrackets(text string) []rune {
+	var stack []rune
+	for _, r := range text {
+		if _, ok := bracketPairs[r]; ok {
+			stack = append(stack, r)
+			continue
+		}
+		for i := len(stack) - 1; i >= 0; i-- {
+			if bracketPairs[stack[i]] == r {
+				stack = append(stack[:i], stack[i+1:]...)
+				break
+			}
+		}
+	}
+	return stack
+}
+
+// bracketBias は、閉じていない括弧があるとき閉じ括弧を優遇し、開き括弧を抑える。
+func bracketBias(stack []rune, token string) float64 {
+	if len(stack) == 0 {
+		return 1
+	}
+	want := bracketPairs[stack[len(stack)-1]]
+	for _, r := range token {
+		if r == want {
+			return 3
+		}
+		if _, ok := bracketPairs[r]; ok {
+			return 0.25
+		}
+	}
+	return 1
+}
+
+// closeBrackets は閉じ忘れた括弧を末尾に補う。
+func closeBrackets(text string) string {
+	stack := openBrackets(text)
+	var sb strings.Builder
+	for i := len(stack) - 1; i >= 0; i-- {
+		sb.WriteRune(bracketPairs[stack[i]])
+	}
+	return sb.String()
 }
 
 // sample は probs (合計 sum) から 1 つ選ぶ。temp <= 0 なら最大確率のものを返す。
