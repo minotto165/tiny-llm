@@ -1,5 +1,5 @@
-// gen は n-gram マルコフ連鎖で続きを生成する。
-// testdata/dic.txt と merges.txt で分割し、-in のコーパスで n-gram を数える。
+// gen は学習済み n-gram モデルで続きを生成する。
+// モデルは `train` が保存したファイルを読み込み、分割は testdata/dic.txt を使う。
 package cli
 
 import (
@@ -8,7 +8,6 @@ import (
 	"log"
 	"math"
 	"math/rand"
-	"os"
 	"sort"
 	"time"
 
@@ -24,14 +23,11 @@ const (
 
 func Gen(args []string) {
 	fs := flag.NewFlagSet("gen", flag.ExitOnError)
-	inPath := fs.String("in", "testdata/input.txt", "コーパス")
+	modelPath := fs.String("model", "testdata/ngram.bin", "学習済みモデル (train で作成)")
 	prompt := fs.String("prompt", "", "プロンプト")
 	n := fs.Int("n", 80, "生成するトークン数")
 	temp := fs.Float64("temp", 0.8, "温度 (0 = 貪欲)")
-	order := fs.Int("order", 2, "マルコフ次数 (1..10)")
 	seed := fs.Int64("seed", 1, "乱数シード")
-	savePath := fs.String("save", "", "学習した n-gram モデルを保存する")
-	loadPath := fs.String("load", "", "保存済みモデルを読み込む (-in は不要)")
 	fs.Parse(args)
 
 	vocab, err := tokenizer.ReadVocab(dictPath)
@@ -42,46 +38,31 @@ func Gen(args []string) {
 	if err != nil {
 		log.Fatal(err)
 	}
+	hash, err := tokenizerHash()
+	if err != nil {
+		log.Fatal(err)
+	}
 	model := tokenizer.NewModel(vocab, merges)
 
-	var m *lm.Model
-	mdlOrder := *order
-	if *loadPath != "" {
-		t0 := time.Now()
-		m, err = lm.LoadFile(*loadPath)
-		if err != nil {
-			log.Fatal(err)
-		}
-		if m.Vocab() != len(vocab) {
-			log.Fatalf("model vocab %d != dict vocab %d", m.Vocab(), len(vocab))
-		}
-		mdlOrder = m.Order()
-		log.Printf("lm: loaded %s (order %d, %d grams) in %s", *loadPath, mdlOrder, m.Grams(), time.Since(t0).Round(time.Millisecond))
-	} else {
-		src, err := os.ReadFile(*inPath)
-		if err != nil {
-			log.Fatal(err)
-		}
-		ids := model.Encode(string(src))
-		t0 := time.Now()
-		m = lm.TrainFull(ids, len(vocab), mdlOrder, lm.DefaultDiscount, hiKeepFor(mdlOrder), hiWeightFor(mdlOrder))
-		log.Printf("lm: order %d, %d tokens, %d grams, %s", mdlOrder, len(ids), m.Grams(), time.Since(t0).Round(time.Millisecond))
-		if *savePath != "" {
-			t0 := time.Now()
-			if err := m.SaveFile(*savePath); err != nil {
-				log.Fatal(err)
-			}
-			log.Printf("saved: %s in %s", *savePath, time.Since(t0).Round(time.Millisecond))
-		}
+	t0 := time.Now()
+	m, err := lm.LoadFile(*modelPath)
+	if err != nil {
+		log.Fatalf("%v (先に `go run . train` を実行してください)", err)
 	}
+	if m.Vocab() != len(vocab) {
+		log.Fatalf("model vocab %d != dict vocab %d (train をやり直してください)", m.Vocab(), len(vocab))
+	}
+	if m.TokenizerHash() != hash {
+		log.Fatalf("model の語彙が dic.txt/merges.txt と一致しません (train をやり直してください)")
+	}
+	log.Printf("model: %s (order %d, %d grams) in %s", *modelPath, m.Order(), m.Grams(), time.Since(t0).Round(time.Millisecond))
 
-	// 生成は 1 トークンずつ標準出力へ流す（トークンはルーン境界で切れているので連結可能）。
 	out := model.Encode(*prompt)
 	fmt.Print(*prompt)
 	probs := make([]float64, len(vocab))
 	rng := rand.New(rand.NewSource(*seed))
 	for i := 0; i < *n; i++ {
-		from := len(out) - (mdlOrder - 1)
+		from := len(out) - (m.Order() - 1)
 		if from < 0 {
 			from = 0
 		}

@@ -36,6 +36,8 @@ type Model struct {
 	cont2ctx map[uint64]int32 // v から始まる異なり (u,w) 数
 	cont2n1  map[uint64]int32 // v の後ろに来る異なり w 数
 
+	tokHash uint64 // 学習時に使った語彙のハッシュ (0 = 未記録)
+
 	hiKeep   int32   // 4 次以上で残す最小出現数
 	hiWeight float64 // 4 次以上の推定を混ぜる重み (1 = そのまま)
 

@@ -1,6 +1,7 @@
 // Command jpllm は tiny-llm のサブコマンドをまとめて起動する。
 //
-//	jpllm tok  トークナイザ (BPE) を学習する
+//	jpllm tok   トークナイザ (BPE) を学習する
+//	jpllm train n-gram モデルを学習して保存する
 //	jpllm lm   n-gram 言語モデルの BPB を評価する
 //	jpllm gen  n-gram で続きを生成する
 package main
@@ -19,6 +20,8 @@ func main() {
 	switch os.Args[1] {
 	case "tok":
 		cli.Tok(os.Args[2:])
+	case "train":
+		cli.Train(os.Args[2:])
 	case "lm":
 		cli.LM(os.Args[2:])
 	case "gen":
@@ -36,13 +39,15 @@ func usage() {
 
 commands:
   tok   corpus から BPE 語彙と併合規則を学習する
+  train corpus から n-gram モデルを学習して保存する
   lm    n-gram マルコフ連鎖の held-out BPB を評価する
   gen   n-gram マルコフ連鎖で続きを生成する
 
 examples:
   go run . tok -in testdata/input.txt
+  go run . train -in testdata/input.txt -order 3
   go run . lm  -in testdata/input.txt -order 3
-  go run . gen -in testdata/lit.txt -order 6 -hikeep 1 -hiweight 0.5 -prompt "その日の午後、"
+  go run . gen -model testdata/ngram.bin -prompt "その日の午後、"
 
 各コマンドのフラグは "jpllm <command> -h" で確認できる。
 `)

@@ -14,11 +14,11 @@ import (
 // バージョン番号を含むので将来の変更は読み込み側で検出できる。
 func (m *Model) Save(w io.Writer) error {
 	bw := bufio.NewWriterSize(w, 1<<20)
-	if _, err := bw.WriteString("JPLM2\n"); err != nil {
+	if _, err := bw.WriteString("JPLM3\n"); err != nil {
 		return err
 	}
 	hdr := []any{
-		int32(m.order), int32(m.v), m.discount, m.hiKeep, m.hiWeight, m.total, m.n1uni,
+		int32(m.order), int32(m.v), m.discount, m.hiKeep, m.hiWeight, m.total, m.n1uni, m.tokHash,
 	}
 	for _, v := range hdr {
 		if err := binary.Write(bw, binary.LittleEndian, v); err != nil {
@@ -56,12 +56,12 @@ func Load(r io.Reader) (*Model, error) {
 	if _, err := io.ReadFull(br, magic); err != nil {
 		return nil, err
 	}
-	if string(magic) != "JPLM2\n" {
+	if string(magic) != "JPLM3\n" {
 		return nil, errors.New("lm: not a model file")
 	}
 	m := &Model{}
 	var order, v int32
-	for _, p := range []any{&order, &v, &m.discount, &m.hiKeep, &m.hiWeight, &m.total, &m.n1uni} {
+	for _, p := range []any{&order, &v, &m.discount, &m.hiKeep, &m.hiWeight, &m.total, &m.n1uni, &m.tokHash} {
 		if err := binary.Read(br, binary.LittleEndian, p); err != nil {
 			return nil, err
 		}
@@ -119,6 +119,12 @@ func LoadFile(path string) (*Model, error) {
 	return Load(f)
 }
 
+// SetTokenizerHash はモデルが前提とする語彙 (dic.txt + merges.txt) のハッシュを記録する。
+func (m *Model) SetTokenizerHash(h uint64) { m.tokHash = h }
+
+// TokenizerHash は学習時に記録した語彙のハッシュを返す。0 は未記録。
+func (m *Model) TokenizerHash() uint64 { return m.tokHash }
+
 // Order はモデルの次数を返す。
 func (m *Model) Order() int { return m.order }
 
@@ -157,11 +163,21 @@ func writeMap(w io.Writer, m map[uint64]int32) error {
 	if err := binary.Write(w, binary.LittleEndian, int64(len(m))); err != nil {
 		return err
 	}
+	const chunk = 4096
+	buf := make([]byte, 0, chunk*12)
+	b := buf
 	for k, v := range m {
-		if err := binary.Write(w, binary.LittleEndian, k); err != nil {
-			return err
+		b = binary.LittleEndian.AppendUint64(b, k)
+		b = binary.LittleEndian.AppendUint32(b, uint32(v))
+		if len(b) == cap(b) {
+			if _, err := w.Write(b); err != nil {
+				return err
+			}
+			b = b[:0]
 		}
-		if err := binary.Write(w, binary.LittleEndian, v); err != nil {
+	}
+	if len(b) > 0 {
+		if _, err := w.Write(b); err != nil {
 			return err
 		}
 	}
@@ -177,16 +193,23 @@ func readMap(r io.Reader) (map[uint64]int32, error) {
 		return nil, fmt.Errorf("lm: bad map size %d", n)
 	}
 	m := make(map[uint64]int32, n)
-	for i := int64(0); i < n; i++ {
-		var k uint64
-		var v int32
-		if err := binary.Read(r, binary.LittleEndian, &k); err != nil {
+	const chunk = 4096
+	buf := make([]byte, chunk*12)
+	for i := int64(0); i < n; {
+		cnt := int64(chunk)
+		if n-i < cnt {
+			cnt = n - i
+		}
+		b := buf[:cnt*12]
+		if _, err := io.ReadFull(r, b); err != nil {
 			return nil, err
 		}
-		if err := binary.Read(r, binary.LittleEndian, &v); err != nil {
-			return nil, err
+		for j := 0; j < len(b); j += 12 {
+			k := binary.LittleEndian.Uint64(b[j:])
+			v := int32(binary.LittleEndian.Uint32(b[j+8:]))
+			m[k] = v
 		}
-		m[k] = v
+		i += cnt
 	}
 	return m, nil
 }
