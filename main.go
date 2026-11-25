@@ -22,6 +22,8 @@ func main() {
 		cli.Tok(os.Args[2:])
 	case "train":
 		cli.Train(os.Args[2:])
+	case "tfm":
+		cli.Tfm(os.Args[2:])
 	case "lm":
 		cli.LM(os.Args[2:])
 	case "gen":
@@ -40,14 +42,16 @@ func usage() {
 commands:
   tok   corpus から BPE 語彙と併合規則を学習する
   train corpus から n-gram モデルを学習して保存する
+  tfm   corpus から Transformer を学習して保存する
   lm    n-gram マルコフ連鎖の held-out BPB を評価する
-  gen   n-gram マルコフ連鎖で続きを生成する
+  gen   モデル (n-gram / Transformer) で続きを生成する
 
 examples:
   go run . tok -in testdata/input.txt
   go run . train -in testdata/input.txt -order 3
   go run . lm  -in testdata/input.txt -order 3
   go run . gen -model testdata/ngram.bin -prompt "その日の午後、"
+  go run . tfm -in testdata/lit.txt -steps 2000
 
 各コマンドのフラグは "jpllm <command> -h" で確認できる。
 `)

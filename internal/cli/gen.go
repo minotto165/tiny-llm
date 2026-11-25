@@ -5,12 +5,15 @@ package cli
 import (
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"math/rand"
+	"os"
 	"sort"
 	"time"
 
+	"github.com/minotto165/tiny-llm/internal/nn"
 	"github.com/minotto165/tiny-llm/lm"
 	"github.com/minotto165/tiny-llm/tokenizer"
 )
@@ -43,6 +46,17 @@ func Gen(args []string) {
 		log.Fatal(err)
 	}
 	model := tokenizer.NewModel(vocab, merges)
+
+	// 先頭のマジックで n-gram か Transformer かを判定する。
+	if f, err := os.Open(*modelPath); err == nil {
+		head := make([]byte, 6)
+		_, err := io.ReadFull(f, head)
+		f.Close()
+		if err == nil && nn.IsTransformer(head) {
+			genTfm(*modelPath, *prompt, *n, *temp, *seed, model, hash)
+			return
+		}
+	}
 
 	t0 := time.Now()
 	m, err := lm.LoadFile(*modelPath)
