@@ -28,6 +28,8 @@ func main() {
 		cli.LM(os.Args[2:])
 	case "gen":
 		cli.Gen(os.Args[2:])
+	case "ids":
+		cli.Ids(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -45,6 +47,7 @@ commands:
   tfm   corpus から Transformer を学習して保存する
   lm    n-gram マルコフ連鎖の held-out BPB を評価する
   gen   モデル (n-gram / Transformer) で続きを生成する
+  ids   corpus をトークン ID 列 (int32) に変換する
 
 examples:
   go run . tok -in testdata/input.txt
@@ -52,6 +55,7 @@ examples:
   go run . lm  -in testdata/input.txt -order 3
   go run . gen -model testdata/ngram.bin -prompt "その日の午後、"
   go run . tfm -in testdata/lit.txt -steps 2000
+  go run . ids -in testdata/lit.txt -out testdata/ids.bin
 
 各コマンドのフラグは "jpllm <command> -h" で確認できる。
 `)

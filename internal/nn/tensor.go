@@ -2,7 +2,12 @@
 // 外部ライブラリは使わず、行列は flat な []float64 で持つ。
 package nn
 
-import "math"
+import (
+	"math"
+	"runtime"
+	"sync"
+	"sync/atomic"
+)
 
 // Mat は行優先の 2 次元行列。
 type Mat struct {
@@ -28,10 +33,38 @@ func (m *Mat) Zero() {
 	}
 }
 
+// parallelFor は 0..n-1 を複数の goroutine で処理する。
+// 1 要素あたりの仕事が小さいときは分割しない (オーバーヘッドの方が大きい)。
+func parallelFor(n, minWork int, fn func(i int)) {
+	workers := runtime.GOMAXPROCS(0)
+	if workers <= 1 || n < workers || n*minWork < 200000 {
+		for i := 0; i < n; i++ {
+			fn(i)
+		}
+		return
+	}
+	var next int64 = -1
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for w := 0; w < workers; w++ {
+		go func() {
+			defer wg.Done()
+			for {
+				i := int(atomic.AddInt64(&next, 1))
+				if i >= n {
+					return
+				}
+				fn(i)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
 // Mul は a·b を返す。
 func Mul(a, b Mat) Mat {
 	out := NewMat(a.R, b.C)
-	for i := 0; i < a.R; i++ {
+	parallelFor(a.R, a.C*b.C, func(i int) {
 		orow := out.D[i*out.C : (i+1)*out.C]
 		for k := 0; k < a.C; k++ {
 			v := a.D[i*a.C+k]
@@ -43,7 +76,7 @@ func Mul(a, b Mat) Mat {
 				orow[j] += v * brow[j]
 			}
 		}
-	}
+	})
 	return out
 }
 
@@ -75,20 +108,20 @@ func linear(x, w, b Mat) Mat {
 
 // linearBackward は dL/dx を返し、dL/dw と dL/db を accum する。
 func linearBackward(x, w, dy Mat, dw, db *Mat) Mat {
-	// dw += xᵀ·dy
-	for i := 0; i < x.C; i++ {
+	// dw += xᵀ·dy （行 i は独立なので並列化できる）
+	parallelFor(x.C, x.R*dy.C, func(i int) {
+		wrow := dw.D[i*dw.C : (i+1)*dw.C]
 		for t := 0; t < x.R; t++ {
 			v := x.D[t*x.C+i]
 			if v == 0 {
 				continue
 			}
 			drow := dy.D[t*dy.C : (t+1)*dy.C]
-			wrow := dw.D[i*dw.C : (i+1)*dw.C]
 			for j := range drow {
 				wrow[j] += v * drow[j]
 			}
 		}
-	}
+	})
 	// db += Σ dy
 	for t := 0; t < dy.R; t++ {
 		drow := dy.D[t*dy.C : (t+1)*dy.C]
@@ -98,7 +131,7 @@ func linearBackward(x, w, dy Mat, dw, db *Mat) Mat {
 	}
 	// dx = dy·wᵀ （w は in×out なので、行 i が入力 i の重み）
 	dx := NewMat(x.R, x.C)
-	for t := 0; t < dy.R; t++ {
+	parallelFor(dy.R, x.C*dy.C, func(t int) {
 		dyrow := dy.D[t*dy.C : (t+1)*dy.C]
 		drow := dx.D[t*dx.C : (t+1)*dx.C]
 		for i := 0; i < x.C; i++ {
@@ -109,7 +142,7 @@ func linearBackward(x, w, dy Mat, dw, db *Mat) Mat {
 			}
 			drow[i] = acc
 		}
-	}
+	})
 	return dx
 }
 
