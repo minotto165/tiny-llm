@@ -1,4 +1,4 @@
-// Command jptok はコーパスを BPE で分割し、分割結果・語彙・併合規則を書き出す。
+// tok はコーパスを BPE で分割し、分割結果・語彙・併合規則を testdata/ に書き出す。
 package cli
 
 import (
@@ -12,143 +12,103 @@ import (
 	"github.com/minotto165/tiny-llm/tokenizer"
 )
 
+const (
+	outPath    = "testdata/output.txt"
+	dictPath   = "testdata/dic.txt"
+	mergesPath = "testdata/merges.txt"
+
+	minCount   = 2
+	minChar    = 50
+	batch      = 200
+	minRareCut = 100
+)
+
 func Tok(args []string) {
 	fs := flag.NewFlagSet("tok", flag.ExitOnError)
-	inPath := fs.String("in", "testdata/input.txt", "input text file (UTF-8)")
-	outPath := fs.String("out", "testdata/output.txt", "segmented output file")
-	dictPath := fs.String("dict", "testdata/dic.txt", "vocabulary (JSON) output file")
-	mergesPath := fs.String("merges", "testdata/merges.txt", "merge rules (priority order) output file")
-	vocabSize := fs.Int("vocab", 32000, "target vocabulary size (merges stop here)")
-	minCount := fs.Int("mincount", 2, "minimum pair frequency to merge")
-	minChar := fs.Int("minchar", 50, "minimum rune frequency for a base token (0 = all; rarer runes become <unk>)")
-	batch := fs.Int("batch", 200, "merges applied per counting pass (speed/quality knob)")
-	holdout := fs.Float64("holdout", 0, "fraction of the tail held out for tokens/char (0 = off)")
-	quiet := fs.Bool("quiet", false, "suppress progress logs")
+	inPath := fs.String("in", "testdata/input.txt", "コーパス (UTF-8)")
+	vocabSize := fs.Int("vocab", 32000, "語彙数")
 	fs.Parse(args)
 
 	src, err := os.ReadFile(*inPath)
 	if err != nil {
 		log.Fatal(err)
 	}
-	if *holdout < 0 || *holdout >= 1 {
-		log.Fatalf("holdout must be in [0, 1): %v", *holdout)
-	}
-
-	// 末尾を held-out にして、先頭だけで学習する（語彙と併合規則の汎化を見る）。
-	trainSrc, held := src, ""
-	if *holdout > 0 {
-		offs := tokenizer.RuneOffsets(src)
-		cut := offs[int(float64(len(offs)-1)*(1-*holdout))]
-		trainSrc, held = src[:cut], string(src[cut:])
-	}
 
 	t0 := time.Now()
-	res, err := tokenizer.Train(trainSrc, tokenizer.Config{
+	res, err := tokenizer.Train(src, tokenizer.Config{
 		VocabSize:    *vocabSize,
-		MinCount:     *minCount,
-		MinCharCount: *minChar,
-		Batch:        *batch,
-		Quiet:        *quiet,
+		MinCount:     minCount,
+		MinCharCount: minChar,
+		Batch:        batch,
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
 	buildDur := time.Since(t0)
 
-	// 書き出す分割は、配布する語彙と併合規則 (Model) で振り直す。
-	// 学習中の id 列は -batch の近似を含むので、Model.Encode を正とする。
+	// 学習中の id 列は -batch の近似を含むので、配布する語彙と併合規則で振り直す。
 	t1 := time.Now()
 	model := res.Model()
-	ids := model.Encode(string(trainSrc))
+	ids := model.Encode(string(src))
 	tokens := make([]string, len(ids))
 	for i, id := range ids {
 		tokens[i] = model.Vocab[id]
 	}
 	encodeDur := time.Since(t1)
-	// 可逆性の検査: <unk> 以外のトークンを連結すると、語彙に入らなかった
-	// ルーン (-minchar) を除いた入力に戻るか。
-	expected := string(trainSrc)
-	if *minChar > 0 {
-		counts := make(map[rune]int)
-		for _, r := range expected {
-			counts[r]++
-		}
-		var eb strings.Builder
-		for _, r := range expected {
-			if counts[r] >= *minChar {
-				eb.WriteRune(r)
-			}
-		}
-		expected = eb.String()
+
+	// 可逆性の検査: <unk> 以外を連結すると、-minchar 未満の文字を除いた入力に戻るか。
+	counts := make(map[rune]int)
+	for _, r := range string(src) {
+		counts[r]++
 	}
-	var joined strings.Builder
+	var expected, joined strings.Builder
+	for _, r := range string(src) {
+		if counts[r] >= minChar {
+			expected.WriteRune(r)
+		}
+	}
 	for i, tok := range tokens {
 		if ids[i] != tokenizer.UnkID {
 			joined.WriteString(tok)
 		}
 	}
-	if got := joined.String(); got != expected {
-		log.Fatalf("internal error: detokenization mismatch (%d vs %d bytes)", len(got), len(expected))
+	if joined.String() != expected.String() {
+		log.Fatalf("internal error: detokenization mismatch (%d vs %d bytes)", joined.Len(), expected.Len())
 	}
 
-	if err := os.WriteFile(*outPath, []byte(strings.Join(tokens, "/")), 0o644); err != nil {
+	if err := os.WriteFile(outPath, []byte(strings.Join(tokens, "/")), 0o644); err != nil {
 		log.Fatal(err)
 	}
-	if err := tokenizer.WriteVocab(*dictPath, res.Vocab); err != nil {
+	if err := tokenizer.WriteVocab(dictPath, res.Vocab); err != nil {
 		log.Fatal(err)
 	}
-	if err := tokenizer.WriteMerges(*mergesPath, res.Merges); err != nil {
+	if err := tokenizer.WriteMerges(mergesPath, res.Merges); err != nil {
 		log.Fatal(err)
 	}
 
-	if !*quiet {
-		totalLen, oneChar := 0, 0
-		for _, t := range tokens {
-			if l := utf8.RuneCountInString(t); l == 1 {
-				totalLen++
-				oneChar++
-			} else {
-				totalLen += l
-			}
+	totalLen, oneChar := 0, 0
+	for _, t := range tokens {
+		if l := utf8.RuneCountInString(t); l == 1 {
+			totalLen++
+			oneChar++
+		} else {
+			totalLen += l
 		}
-		if len(res.Vocab) > *vocabSize {
-			log.Printf("warning: input has %d distinct runes, more than vocab %d", len(res.Vocab), *vocabSize)
-		}
-		freq := make(map[int32]int, len(res.Vocab))
-		for _, id := range ids {
-			freq[id]++
-		}
-		rare := 0
-		for i := range res.Vocab {
-			if freq[int32(i)] < 100 {
-				rare++
-			}
-		}
-		log.Printf("corpus: %d runes, %d merges", len(tokenizer.RuneOffsets(trainSrc))-1, len(res.Merges))
-		log.Printf("vocab: %d, rare (<100): %d (%.1f%%)", len(res.Vocab), rare, 100*float64(rare)/float64(len(res.Vocab)))
-		log.Printf("corpus unk: %d (%.3f%%)", freq[tokenizer.UnkID], 100*float64(freq[tokenizer.UnkID])/float64(len(ids)))
-		log.Printf("train: %d tokens, encode: %d tokens", len(res.IDs), len(tokens))
-		log.Printf("avg len: %.2f, 1-char: %.1f%%",
-			float64(totalLen)/float64(len(tokens)),
-			100*float64(oneChar)/float64(len(tokens)))
-		reportHeldOut(model, held)
-		log.Printf("build: %s, encode: %s, total: %s", buildDur, encodeDur, time.Since(t0))
 	}
-}
-
-// reportHeldOut は学習に使っていない末尾を分割し、圧縮率を報告する。
-func reportHeldOut(m *tokenizer.Model, held string) {
-	if held == "" {
-		return
-	}
-	ids := m.Encode(held)
-	chars := utf8.RuneCountInString(held)
-	unk := 0
+	freq := make(map[int32]int, len(res.Vocab))
 	for _, id := range ids {
-		if id == tokenizer.UnkID {
-			unk++
+		freq[id]++
+	}
+	rare := 0
+	for i := range res.Vocab {
+		if freq[int32(i)] < minRareCut {
+			rare++
 		}
 	}
-	log.Printf("held-out: %d chars, %d tokens, %.2f chars/token, unk %d",
-		chars, len(ids), float64(chars)/float64(len(ids)), unk)
+	log.Printf("corpus: %d runes, %d merges", len(tokenizer.RuneOffsets(src))-1, len(res.Merges))
+	log.Printf("vocab: %d, rare (<%d): %d (%.1f%%)", len(res.Vocab), minRareCut, rare, 100*float64(rare)/float64(len(res.Vocab)))
+	log.Printf("corpus unk: %d (%.3f%%)", freq[tokenizer.UnkID], 100*float64(freq[tokenizer.UnkID])/float64(len(ids)))
+	log.Printf("avg len: %.2f, 1-char: %.1f%%",
+		float64(totalLen)/float64(len(tokens)), 100*float64(oneChar)/float64(len(tokens)))
+	log.Printf("build: %s, encode: %s, total: %s", buildDur.Round(time.Millisecond), encodeDur.Round(time.Millisecond), time.Since(t0).Round(time.Millisecond))
 }

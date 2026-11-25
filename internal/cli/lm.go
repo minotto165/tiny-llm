@@ -1,5 +1,4 @@
-// jplm は n-gram マルコフ連鎖言語モデルの評価コマンド。
-// 末尾 holdout を学習から外し、その BPB (bits per UTF-8 byte) を出す。
+// lm は n-gram マルコフ連鎖言語モデルを学習し、held-out の BPB (bits per UTF-8 byte) を出す。
 package cli
 
 import (
@@ -15,18 +14,10 @@ import (
 
 func LM(args []string) {
 	fs := flag.NewFlagSet("lm", flag.ExitOnError)
-	inPath := fs.String("in", "testdata/input.txt", "corpus file")
-	vocabSize := fs.Int("vocab", 32000, "tokenizer vocabulary size")
-	minCount := fs.Int("mincount", 2, "minimum pair frequency to merge")
-	minChar := fs.Int("minchar", 50, "minimum rune frequency for a base token")
-	batch := fs.Int("batch", 200, "merges applied per counting pass")
-	order := fs.Int("order", 2, "Markov order (1..10)")
-	discountFlag := fs.Float64("discount", lm.DefaultDiscount, "Kneser-Ney discount D")
-	hiKeep := fs.Int("hikeep", lm.DefaultHiKeep, "minimum count kept for 4+-grams")
-	hiWeight := fs.Float64("hiweight", lm.DefaultHiWeight, "weight of the 4+-gram estimate")
-	holdout := fs.Float64("holdout", 0.05, "tail fraction held out for BPB")
-	evalPath := fs.String("eval", "", "separate evaluation file (trains on the whole -in file)")
-	quiet := fs.Bool("quiet", false, "suppress progress logs")
+	inPath := fs.String("in", "testdata/input.txt", "コーパス")
+	order := fs.Int("order", 3, "マルコフ次数 (1..10)")
+	evalPath := fs.String("eval", "", "別ファイルで評価する（-in 全体で学習）")
+	holdout := fs.Float64("holdout", 0.05, "末尾から評価に回す割合")
 	fs.Parse(args)
 
 	src, err := os.ReadFile(*inPath)
@@ -34,7 +25,7 @@ func LM(args []string) {
 		log.Fatal(err)
 	}
 
-	// jptok -holdout と同じ位置で切る（語彙・分割を held-out から隔離する）。
+	// tok と同じ位置で切る（語彙・分割を held-out から隔離する）。
 	head, tail := src, ""
 	if *evalPath != "" {
 		ev, err := os.ReadFile(*evalPath)
@@ -53,11 +44,10 @@ func LM(args []string) {
 
 	t0 := time.Now()
 	res, err := tokenizer.Train(head, tokenizer.Config{
-		VocabSize:    *vocabSize,
-		MinCount:     *minCount,
-		MinCharCount: *minChar,
-		Batch:        *batch,
-		Quiet:        *quiet,
+		VocabSize:    32000,
+		MinCount:     minCount,
+		MinCharCount: minChar,
+		Batch:        batch,
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -68,7 +58,7 @@ func LM(args []string) {
 	tokDur := time.Since(t0)
 
 	t1 := time.Now()
-	m := lm.TrainFull(headIDs, len(res.Vocab), *order, *discountFlag, int32(*hiKeep), *hiWeight)
+	m := lm.TrainFull(headIDs, len(res.Vocab), *order, lm.DefaultDiscount, hiKeepFor(*order), hiWeightFor(*order))
 	bits, unk := 0.0, 0
 	for i, id := range tailIDs {
 		from := i - (*order - 1)
@@ -86,5 +76,23 @@ func LM(args []string) {
 	bpb := bits / float64(len(tail))
 	log.Printf("order %d: held-out %d bytes, %d tokens, unk %d (%.2f%%), BPB %.4f",
 		*order, len(tail), len(tailIDs), unk, 100*float64(unk)/float64(len(tailIDs)), bpb)
-	log.Printf("train: %d tokens, %d grams; tokenize %v, apply %v", len(headIDs), m.Grams(), tokDur.Round(time.Millisecond), evalDur.Round(time.Millisecond))
+	log.Printf("train: %d tokens, %d grams; tokenize %v, apply %v",
+		len(headIDs), m.Grams(), tokDur.Round(time.Millisecond), evalDur.Round(time.Millisecond))
+}
+
+// hiKeepFor / hiWeightFor は 4 次以上の n-gram の扱いを次数から決める。
+// 既定 (2, 1.0) のままでは 4 次以上が全部 pruning されて次数を上げる意味がなく、
+// hikeep 1 をそのまま重み 1 で使うと学習データの丸暗記に寄るため。
+func hiKeepFor(order int) int32 {
+	if order >= 4 {
+		return 1
+	}
+	return lm.DefaultHiKeep
+}
+
+func hiWeightFor(order int) float64 {
+	if order >= 4 {
+		return 0.5
+	}
+	return lm.DefaultHiWeight
 }
