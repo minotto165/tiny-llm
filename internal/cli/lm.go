@@ -18,6 +18,7 @@ func LM(args []string) {
 	order := fs.Int("order", 3, "マルコフ次数 (1..10)")
 	evalPath := fs.String("eval", "", "別ファイルで評価する（-in 全体で学習）")
 	modelPath := fs.String("model", "", "保存済み Transformer を評価する (tfm.bin)")
+	limit := fs.Int("limit", 0, "先頭 N トークンだけ評価 (0=全部)")
 	holdout := fs.Float64("holdout", 0.05, "末尾から評価に回す割合")
 	fs.Parse(args)
 
@@ -44,7 +45,7 @@ func LM(args []string) {
 	}
 
 	if *modelPath != "" {
-		evalTfm(*modelPath, tail)
+		evalTfm(*modelPath, tail, *limit)
 		return
 	}
 

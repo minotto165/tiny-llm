@@ -12,7 +12,7 @@ import (
 )
 
 // evalTfm は tail を Transformer で評価し、BPB (bits per UTF-8 byte) を出す。
-func evalTfm(modelPath, tail string) {
+func evalTfm(modelPath, tail string, limit int) {
 	vocab, err := tokenizer.ReadVocab(dictPath)
 	if err != nil {
 		log.Fatal(err)
@@ -42,10 +42,19 @@ func evalTfm(modelPath, tail string) {
 	ids := tok.Encode(tail)
 
 	t0 := time.Now()
+	ctx := m.Cfg.Ctx
+	numWin := (len(ids) - 1 + ctx - 1) / ctx
+	stride := 1
+	if limit > 0 && limit < len(ids) {
+		stride = (numWin*ctx + limit - 1) / limit
+		if stride < 1 {
+			stride = 1
+		}
+	}
 	var bits float64
 	var n, unk int
-	ctx := m.Cfg.Ctx
-	for from := 0; from+1 < len(ids); from += ctx {
+	for wi := 0; wi < numWin; wi += stride {
+		from := wi * ctx
 		to := from + ctx
 		if to > len(ids) {
 			to = len(ids)
@@ -76,7 +85,8 @@ func evalTfm(modelPath, tail string) {
 			n++
 		}
 	}
-	log.Printf("transformer: held-out %d bytes, %d tokens, unk %d (%.2f%%), BPB %.4f",
-		len(tail), n, unk, 100*float64(unk)/float64(n), bits/float64(len(tail)))
+	bytes := int(float64(n) * float64(len(tail)) / float64(len(ids)))
+	log.Printf("transformer: %d bytes, %d tokens, unk %d (%.2f%%), BPB %.4f",
+		bytes, n, unk, 100*float64(unk)/float64(n), bits/float64(bytes))
 	log.Printf("apply: %s", time.Since(t0).Round(time.Millisecond))
 }
