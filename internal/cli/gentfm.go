@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"os"
 	"sort"
+	"strings"
 
 	"github.com/minotto165/tiny-llm/internal/nn"
 	"github.com/minotto165/tiny-llm/tokenizer"
@@ -32,6 +33,10 @@ func genTfm(path, prompt string, n int, temp float64, seed int64, tok *tokenizer
 	log.Printf("model: %s (dim %d, %d layers, ctx %d)", path, m.Cfg.Dim, m.Cfg.Layers, m.Cfg.Ctx)
 
 	out := tok.Encode(prompt)
+	// "<bos>" で始めると文書の先頭から生成する（<bos> は特殊トークンなので Encode では出てこない）
+	if rest, ok := strings.CutPrefix(prompt, "<bos>"); ok {
+		out = append([]int32{tokenizer.BosID}, tok.Encode(rest)...)
+	}
 	if len(out) == 0 {
 		log.Fatal("プロンプトを指定してください")
 	}

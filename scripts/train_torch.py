@@ -141,12 +141,19 @@ def main():
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--parity", action="store_true", help="書き出し後に参照実装と照合する")
+    ap.add_argument("--rows", type=int, default=0,
+                    help="ID列をこの長さの行に区切ってサンプルする（セクション窓用。0=ランダム位置から切り出す）")
+    ap.add_argument("--holdout-rows", type=float, default=0.0,
+                    help="末尾のこの割合の行を学習から外し、最後に検証lossを出す（--rows と併用）")
+    ap.add_argument("--dir", default="",
+                    help="dic.txt / merges.txt のあるディレクトリ (省略時は ../testdata)")
     args = ap.parse_args()
 
+    here0 = os.path.dirname(os.path.abspath(__file__))
+    tokdir = args.dir or os.path.join(here0, "..", "testdata")
     if args.vocab == 0:
         import json
-        here0 = os.path.dirname(os.path.abspath(__file__))
-        with open(os.path.join(here0, "..", "testdata", "dic.txt"), encoding="utf-8") as fh:
+        with open(os.path.join(tokdir, "dic.txt"), encoding="utf-8") as fh:
             args.vocab = len(json.load(fh))
     torch.manual_seed(args.seed)
     rng = np.random.default_rng(args.seed)
@@ -162,6 +169,16 @@ def main():
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, betas=(0.9, 0.95), weight_decay=args.weight_decay)
     t0 = time.time()
     data = torch.from_numpy(ids.astype(np.int64))
+    win = args.rows if args.rows else args.ctx
+    nrows = 0
+    nrows_train = 0
+    if args.rows:
+        nrows = len(ids) // args.rows
+        nrows_train = nrows
+        if args.holdout_rows > 0:
+            nrows_train = max(1, int(nrows * (1.0 - args.holdout_rows)))
+        print(f"rows: {nrows:,} 行 × {args.rows} トークン "
+              f"(学習 {nrows_train:,} / 検証 {nrows - nrows_train:,})", file=sys.stderr)
     for step in range(1, args.steps + 1):
         if args.warmup > 0 and step <= args.warmup:
             lr = args.lr * step / args.warmup
@@ -172,8 +189,12 @@ def main():
             lr = args.lr
         for g in opt.param_groups:
             g["lr"] = lr
-        starts = rng.integers(0, len(ids) - args.ctx - 1, size=args.batch)
-        idx = torch.from_numpy(starts[:, None] + np.arange(args.ctx + 1)[None, :])
+        if args.rows:
+            rs = rng.integers(0, nrows_train, size=args.batch)
+            idx = rs[:, None] * args.rows + np.arange(args.rows)[None, :]
+        else:
+            starts = rng.integers(0, len(ids) - args.ctx - 1, size=args.batch)
+            idx = torch.from_numpy(starts[:, None] + np.arange(args.ctx + 1)[None, :])
         chunk = data[idx].to(args.device)
         logits = model(chunk[:, :-1])
         loss = F.cross_entropy(logits.reshape(-1, args.vocab), chunk[:, 1:].reshape(-1))
@@ -183,14 +204,29 @@ def main():
         opt.step()
         if step == 1 or step % 25 == 0:
             per = (time.time() - t0) / step
-            seen = step * args.batch * args.ctx
+            seen = step * args.batch * win
             print(f"step {step}/{args.steps} loss {loss.item():.4f} "
                   f"({per*1000:.0f} ms/step, {seen/len(ids):.2f} epoch, 残り {(args.steps-step)*per/60:.1f} 分)",
                   file=sys.stderr)
 
     here = os.path.dirname(os.path.abspath(__file__))
-    tokhash = fnv64([os.path.join(here, "..", "testdata", "dic.txt"),
-                     os.path.join(here, "..", "testdata", "merges.txt")])
+    if args.rows and args.holdout_rows > 0 and nrows > nrows_train:
+        model.eval()
+        tot, cnt = 0.0, 0
+        with torch.no_grad():
+            for r0 in range(nrows_train, nrows, 64):
+                rs = np.arange(r0, min(r0 + 64, nrows))
+                vidx = rs[:, None] * args.rows + np.arange(args.rows)[None, :]
+                vchunk = data[vidx].to(args.device)
+                vlogits = model(vchunk[:, :-1])
+                vloss = F.cross_entropy(vlogits.reshape(-1, args.vocab),
+                                        vchunk[:, 1:].reshape(-1), reduction="sum")
+                tot += float(vloss.item())
+                cnt += int(vchunk[:, 1:].numel())
+        model.train()
+        print(f"val loss: {tot/cnt:.4f} (検証 {nrows-nrows_train:,} 行)", file=sys.stderr)
+    tokhash = fnv64([os.path.join(tokdir, "dic.txt"),
+                     os.path.join(tokdir, "merges.txt")])
     save(model, args.out, tokhash)
     print(f"saved: {args.out}", file=sys.stderr)
 
