@@ -19,11 +19,13 @@ import (
 	"github.com/minotto165/tiny-llm/tokenizer"
 )
 
-const (
-	repeatPenalty = 1.15 // 直近 32 トークンの重複ペナルティ
-	repeatWindow  = 32
-	topK          = 0 // 0 = 全候補からサンプル
-)
+// sampling は生成時のサンプリング設定。
+type sampling struct {
+	temp   float64
+	topK   int     // 0 = 全候補
+	repPen float64 // 直近 repWin トークンの重複ペナルティ
+	repWin int
+}
 
 func Gen(args []string) {
 	fs := flag.NewFlagSet("gen", flag.ExitOnError)
@@ -32,11 +34,15 @@ func Gen(args []string) {
 	n := fs.Int("n", 80, "生成するトークン数")
 	temp := fs.Float64("temp", 0.8, "温度 (0 = 貪欲)")
 	seed := fs.Int64("seed", 1, "乱数シード")
+	topk := fs.Int("topk", 40, "上位 K 個からサンプル (0 = 全候補)")
+	reppen := fs.Float64("reppen", 1.15, "直近のトークンの重複ペナルティ (1 = 無効)")
+	repwin := fs.Int("repwin", 32, "重複ペナルティを見るトークン数")
 	dir := fs.String("dir", "testdata", "dic.txt / merges.txt のあるディレクトリ")
 	check := fs.String("check", "", "丸写し率を測る参照コーパス (例 testdata/discord/corpus/train_all.txt)")
 	checkn := fs.Int("checkn", 20, "丸写し判定の窓の長さ")
 	samples := fs.Int("samples", 1, "-check 時に生成するサンプル数 (seed を 1 つずつずらす)")
 	fs.Parse(args)
+	sp := sampling{temp: *temp, topK: *topk, repPen: *reppen, repWin: *repwin}
 	dictPath, mergesPath := artifacts(*dir)
 
 	vocab, err := tokenizer.ReadVocab(dictPath)
@@ -59,7 +65,7 @@ func Gen(args []string) {
 		_, err := io.ReadFull(f, head)
 		f.Close()
 		if err == nil && nn.IsTransformer(head) {
-			genTfm(*modelPath, *prompt, *n, *temp, *seed, model, hash, *check, *checkn, *samples)
+			genTfm(*modelPath, *prompt, *n, *seed, sp, model, hash, *check, *checkn, *samples)
 			return
 		}
 	}
@@ -83,7 +89,7 @@ func Gen(args []string) {
 		if k > 0 {
 			fmt.Println()
 		}
-		all = append(all, genNgram(m, model, *prompt, *n, *temp, *seed+int64(k), probs))
+		all = append(all, genNgram(m, model, *prompt, *n, *seed+int64(k), sp, probs))
 	}
 	if *check != "" {
 		mc, err := newMemCheck(*check, *checkn)
@@ -95,7 +101,7 @@ func Gen(args []string) {
 }
 
 // genNgram は n-gram モデルで 1 サンプル生成し、生成部分を返す。
-func genNgram(m *lm.Model, model *tokenizer.Model, prompt string, n int, temp float64, seed int64, probs []float64) string {
+func genNgram(m *lm.Model, model *tokenizer.Model, prompt string, n int, seed int64, sp sampling, probs []float64) string {
 	out := model.Encode(prompt)
 	fmt.Print(prompt)
 	var gen strings.Builder
@@ -114,14 +120,16 @@ func genNgram(m *lm.Model, model *tokenizer.Model, prompt string, n int, temp fl
 				continue
 			}
 			p := m.Prob(ctx, int32(w))
-			for j := len(out) - repeatWindow; j < len(out); j++ {
-				if j >= 0 && int32(w) == out[j] {
-					p /= repeatPenalty
-					break
+			if sp.repPen > 1 {
+				for j := len(out) - sp.repWin; j < len(out); j++ {
+					if j >= 0 && int32(w) == out[j] {
+						p /= sp.repPen
+						break
+					}
 				}
 			}
-			if temp > 0 && temp != 1 {
-				p = math.Pow(p, 1/temp)
+			if sp.temp > 0 && sp.temp != 1 {
+				p = math.Pow(p, 1/sp.temp)
 			}
 			probs[w] = p
 			sum += p
@@ -129,7 +137,7 @@ func genNgram(m *lm.Model, model *tokenizer.Model, prompt string, n int, temp fl
 		if sum <= 0 {
 			log.Fatal("no probability mass")
 		}
-		id := sample(probs, sum, temp, rng)
+		id := sample(probs, sum, sp.temp, sp.topK, rng)
 		out = append(out, id)
 		gen.WriteString(model.Vocab[id])
 		fmt.Print(model.Vocab[id])
@@ -139,7 +147,7 @@ func genNgram(m *lm.Model, model *tokenizer.Model, prompt string, n int, temp fl
 }
 
 // sample は probs (合計 sum) から 1 つ選ぶ。temp <= 0 なら最大確率のものを返す。
-func sample(probs []float64, sum, temp float64, rng *rand.Rand) int32 {
+func sample(probs []float64, sum, temp float64, topK int, rng *rand.Rand) int32 {
 	if temp <= 0 {
 		best := int32(0)
 		for i, p := range probs {

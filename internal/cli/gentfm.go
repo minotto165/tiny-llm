@@ -14,7 +14,7 @@ import (
 	"github.com/minotto165/tiny-llm/tokenizer"
 )
 
-func genTfm(path, prompt string, n int, temp float64, seed int64, tok *tokenizer.Model, hash uint64, check string, checkn, samples int) {
+func genTfm(path, prompt string, n int, seed int64, sp sampling, tok *tokenizer.Model, hash uint64, check string, checkn, samples int) {
 	f, err := os.Open(path)
 	if err != nil {
 		log.Fatal(err)
@@ -40,7 +40,7 @@ func genTfm(path, prompt string, n int, temp float64, seed int64, tok *tokenizer
 		if k > 0 {
 			fmt.Println()
 		}
-		all = append(all, genTfmOne(m, tok, prompt, n, temp, seed+int64(k)))
+		all = append(all, genTfmOne(m, tok, prompt, n, seed+int64(k), sp))
 	}
 	if check != "" {
 		mc, err := newMemCheck(check, checkn)
@@ -52,7 +52,7 @@ func genTfm(path, prompt string, n int, temp float64, seed int64, tok *tokenizer
 }
 
 // genTfmOne は 1 サンプル生成し、生成部分を返す。
-func genTfmOne(m *nn.Model, tok *tokenizer.Model, prompt string, n int, temp float64, seed int64) string {
+func genTfmOne(m *nn.Model, tok *tokenizer.Model, prompt string, n int, seed int64, sp sampling) string {
 	// "<bos>" で始めると文書の先頭から生成する（<bos> は特殊トークンなので Encode では出てこない）
 	out := tok.Encode(prompt)
 	if rest, ok := strings.CutPrefix(prompt, "<bos>"); ok {
@@ -70,10 +70,10 @@ func genTfmOne(m *nn.Model, tok *tokenizer.Model, prompt string, n int, temp flo
 		t := c.T
 		row := append([]float64(nil), c.Logits.D[(t-1)*c.Logits.C:t*c.Logits.C]...)
 		recent := out
-		if len(recent) > repWindow {
-			recent = recent[len(recent)-repWindow:]
+		if sp.repWin > 0 && len(recent) > sp.repWin {
+			recent = recent[len(recent)-sp.repWin:]
 		}
-		id := sampleLogits(row, temp, 40, len(tokenizer.SpecialTokens), recent, rng)
+		id := sampleLogits(row, sp, len(tokenizer.SpecialTokens), recent, rng)
 		out = append(out, id)
 		gen.WriteString(tok.Vocab[id])
 		fmt.Print(tok.Vocab[id])
@@ -82,26 +82,23 @@ func genTfmOne(m *nn.Model, tok *tokenizer.Model, prompt string, n int, temp flo
 	return gen.String()
 }
 
-const (
-	repPenalty = 1.15 // 直近 repWindow トークンの重複ペナルティ
-	repWindow  = 32
-)
-
 // sampleLogits はロジットから 1 トークンをサンプルする。recent の重複は減衰させる。
-func sampleLogits(logits []float64, temp float64, k, skip int, recent []int32, rng *rand.Rand) int32 {
+func sampleLogits(logits []float64, sp sampling, skip int, recent []int32, rng *rand.Rand) int32 {
 	penalize := func(i int) float64 {
 		v := logits[i]
-		for _, r := range recent {
-			if int(r) == i {
-				v -= math.Log(repPenalty)
+		if sp.repPen > 1 {
+			for _, r := range recent {
+				if int(r) == i {
+					v -= math.Log(sp.repPen)
+				}
 			}
 		}
-		if temp > 0 {
-			v /= temp
+		if sp.temp > 0 {
+			v /= sp.temp
 		}
 		return v
 	}
-	if temp <= 0 {
+	if sp.temp <= 0 {
 		best := skip
 		for i := skip; i < len(logits); i++ {
 			if penalize(i) > penalize(best) {
@@ -117,9 +114,9 @@ func sampleLogits(logits []float64, temp float64, k, skip int, recent []int32, r
 	for i := skip; i < len(logits); i++ {
 		idx = append(idx, i)
 	}
-	if k > 0 && k < len(idx) {
+	if sp.topK > 0 && sp.topK < len(idx) {
 		sort.Slice(idx, func(a, b int) bool { return logits[idx[a]] > logits[idx[b]] })
-		idx = idx[:k]
+		idx = idx[:sp.topK]
 	}
 	max := math.Inf(-1)
 	for _, i := range idx {
