@@ -21,7 +21,7 @@ $ python3 scripts/build_discord_corpus.py # Discord の生 JSON から testdata/
 |---|---|
 | `tok` | `-in` `-dir` (出力先) `-vocab` |
 | `train` | `-in` `-order` `-out` |
-| `gen` | `-model` `-dir` `-prompt` `-n` `-temp` `-seed` |
+| `gen` | `-model` `-dir` `-prompt` `-n` `-temp` `-seed` `-check` `-checkn` `-samples` |
 | `lm` | `-in` `-order` `-eval` `-holdout` |
 | `tfm` | `-in` `-out` `-ctx` `-dim` `-heads` `-layers` `-ffn` `-steps` `-batch` `-lr` `-seed` |
 | `ids` | `-in` `-out` |
@@ -53,3 +53,18 @@ $ go run . lm  -in testdata/discord/corpus/train_all.txt -eval testdata/discord/
 `--drop-urls` は URL を本文から除去、`--drop-ascii-noise` は日本語を含まない英数字ノイズ
 （`m!repeat`, `KNTRYK` など）を除去、`--cap-repeat N` は同一人物の同一文の連投を N 回までに畳む。
 `--url-domain` は URL をドメインだけに残す。
+
+## 丸写し率の計測
+
+`gen` に `-check <参照コーパス>` を渡すと、生成が学習データをどれだけコピーしているかを測る。
+
+```
+$ go run . gen -model testdata/discord/model/tfm_v3_3000.bin -dir testdata/discord/model \
+    -prompt "おはよう" -n 120 -samples 8 -check testdata/discord/corpus/train_all.txt
+memcheck[gen]: 8 samples, 20-gram in corpus 216/2043 (10.6%), longest 97 chars (median 13)
+  longest verbatim: "\n🐮am͜a͉nyon\nもう...僕をッ...終わらせてくれえ ..."
+```
+
+- `-checkn` 窓の長さ（既定 20 文字）
+- `-samples` 生成するサンプル数（seed を 1 つずつずらす）
+- 20-gram がコーパスに存在する割合が高いほど暗記している

@@ -11,6 +11,7 @@ import (
 	"math/rand"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/minotto165/tiny-llm/internal/nn"
@@ -32,6 +33,9 @@ func Gen(args []string) {
 	temp := fs.Float64("temp", 0.8, "温度 (0 = 貪欲)")
 	seed := fs.Int64("seed", 1, "乱数シード")
 	dir := fs.String("dir", "testdata", "dic.txt / merges.txt のあるディレクトリ")
+	check := fs.String("check", "", "丸写し率を測る参照コーパス (例 testdata/discord/corpus/train_all.txt)")
+	checkn := fs.Int("checkn", 20, "丸写し判定の窓の長さ")
+	samples := fs.Int("samples", 1, "-check 時に生成するサンプル数 (seed を 1 つずつずらす)")
 	fs.Parse(args)
 	dictPath, mergesPath := artifacts(*dir)
 
@@ -55,7 +59,7 @@ func Gen(args []string) {
 		_, err := io.ReadFull(f, head)
 		f.Close()
 		if err == nil && nn.IsTransformer(head) {
-			genTfm(*modelPath, *prompt, *n, *temp, *seed, model, hash)
+			genTfm(*modelPath, *prompt, *n, *temp, *seed, model, hash, *check, *checkn, *samples)
 			return
 		}
 	}
@@ -73,11 +77,30 @@ func Gen(args []string) {
 	}
 	log.Printf("model: %s (order %d, %d grams) in %s", *modelPath, m.Order(), m.Grams(), time.Since(t0).Round(time.Millisecond))
 
-	out := model.Encode(*prompt)
-	fmt.Print(*prompt)
 	probs := make([]float64, len(vocab))
-	rng := rand.New(rand.NewSource(*seed))
-	for i := 0; i < *n; i++ {
+	var all []string
+	for k := 0; k < *samples; k++ {
+		if k > 0 {
+			fmt.Println()
+		}
+		all = append(all, genNgram(m, model, *prompt, *n, *temp, *seed+int64(k), probs))
+	}
+	if *check != "" {
+		mc, err := newMemCheck(*check, *checkn)
+		if err != nil {
+			log.Fatal(err)
+		}
+		multiReport(mc, all)
+	}
+}
+
+// genNgram は n-gram モデルで 1 サンプル生成し、生成部分を返す。
+func genNgram(m *lm.Model, model *tokenizer.Model, prompt string, n int, temp float64, seed int64, probs []float64) string {
+	out := model.Encode(prompt)
+	fmt.Print(prompt)
+	var gen strings.Builder
+	rng := rand.New(rand.NewSource(seed))
+	for i := 0; i < n; i++ {
 		from := len(out) - (m.Order() - 1)
 		if from < 0 {
 			from = 0
@@ -97,8 +120,8 @@ func Gen(args []string) {
 					break
 				}
 			}
-			if *temp > 0 && *temp != 1 {
-				p = math.Pow(p, 1 / *temp)
+			if temp > 0 && temp != 1 {
+				p = math.Pow(p, 1/temp)
 			}
 			probs[w] = p
 			sum += p
@@ -106,11 +129,13 @@ func Gen(args []string) {
 		if sum <= 0 {
 			log.Fatal("no probability mass")
 		}
-		id := sample(probs, sum, *temp, rng)
+		id := sample(probs, sum, temp, rng)
 		out = append(out, id)
+		gen.WriteString(model.Vocab[id])
 		fmt.Print(model.Vocab[id])
 	}
 	fmt.Println()
+	return gen.String()
 }
 
 // sample は probs (合計 sum) から 1 つ選ぶ。temp <= 0 なら最大確率のものを返す。

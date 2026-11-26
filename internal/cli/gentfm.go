@@ -8,12 +8,13 @@ import (
 	"math/rand"
 	"os"
 	"sort"
+	"strings"
 
 	"github.com/minotto165/tiny-llm/internal/nn"
 	"github.com/minotto165/tiny-llm/tokenizer"
 )
 
-func genTfm(path, prompt string, n int, temp float64, seed int64, tok *tokenizer.Model, hash uint64) {
+func genTfm(path, prompt string, n int, temp float64, seed int64, tok *tokenizer.Model, hash uint64, check string, checkn, samples int) {
 	f, err := os.Open(path)
 	if err != nil {
 		log.Fatal(err)
@@ -31,11 +32,30 @@ func genTfm(path, prompt string, n int, temp float64, seed int64, tok *tokenizer
 	}
 	log.Printf("model: %s (dim %d, %d layers, ctx %d)", path, m.Cfg.Dim, m.Cfg.Layers, m.Cfg.Ctx)
 
-	out := tok.Encode(prompt)
-	if len(out) == 0 {
+	if len(tok.Encode(prompt)) == 0 {
 		log.Fatal("プロンプトを指定してください")
 	}
+	var all []string
+	for k := 0; k < samples; k++ {
+		if k > 0 {
+			fmt.Println()
+		}
+		all = append(all, genTfmOne(m, tok, prompt, n, temp, seed+int64(k)))
+	}
+	if check != "" {
+		mc, err := newMemCheck(check, checkn)
+		if err != nil {
+			log.Fatal(err)
+		}
+		multiReport(mc, all)
+	}
+}
+
+// genTfmOne は 1 サンプル生成し、生成部分を返す。
+func genTfmOne(m *nn.Model, tok *tokenizer.Model, prompt string, n int, temp float64, seed int64) string {
+	out := tok.Encode(prompt)
 	fmt.Print(prompt)
+	var gen strings.Builder
 	rng := rand.New(rand.NewSource(seed))
 	for i := 0; i < n; i++ {
 		from := len(out) - m.Cfg.Ctx
@@ -51,9 +71,11 @@ func genTfm(path, prompt string, n int, temp float64, seed int64, tok *tokenizer
 		}
 		id := sampleLogits(row, temp, 40, len(tokenizer.SpecialTokens), recent, rng)
 		out = append(out, id)
+		gen.WriteString(tok.Vocab[id])
 		fmt.Print(tok.Vocab[id])
 	}
 	fmt.Println()
+	return gen.String()
 }
 
 const (
