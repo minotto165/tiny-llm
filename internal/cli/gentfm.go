@@ -64,11 +64,14 @@ const (
 // sampleLogits はロジットから 1 トークンをサンプルする。recent の重複は減衰させる。
 func sampleLogits(logits []float64, temp float64, k, skip int, recent []int32, rng *rand.Rand) int32 {
 	penalize := func(i int) float64 {
-		v := logits[i] / temp
+		v := logits[i]
 		for _, r := range recent {
 			if int(r) == i {
 				v -= math.Log(repPenalty)
 			}
+		}
+		if temp > 0 {
+			v /= temp
 		}
 		return v
 	}

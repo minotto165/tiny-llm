@@ -27,6 +27,9 @@ class BPE:
             self.vocab = json.load(fh)
         self.index = {w: i for i, w in enumerate(self.vocab)}
         self.unk = 1
+        self.nspecial = 0
+        while self.nspecial < len(self.vocab) and self.vocab[self.nspecial].startswith("<"):
+            self.nspecial += 1
         # merges.txt は "A B NEW" の id 3 つ組（tokenizer.WriteMerges の出力）
         self.rank = {}
         self.merged = {}
@@ -104,6 +107,8 @@ def main():
     ap.add_argument("-n", "--n", type=int, default=60)
     ap.add_argument("--temp", type=float, default=1.0)
     ap.add_argument("--topk", type=int, default=40)
+    ap.add_argument("--reppen", type=float, default=1.15, help="直近トークンの重複ペナルティ")
+    ap.add_argument("--repwindow", type=int, default=32)
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--dump-ids", default="", help="この文字列を分割して id を表示するだけ")
@@ -130,7 +135,12 @@ def main():
         for _ in range(args.n):
             ctx = ids[-cfg["ctx"]:]
             x = torch.tensor([ctx], dtype=torch.long, device=args.device)
-            logits = model(x)[0, -1].float().cpu()
+            logits = model(x)[0, -1].double().cpu()
+            logits[:bpe.nspecial] = float("-inf")  # 特殊トークンは出さない
+            if args.reppen > 1:
+                for r in ids[-args.repwindow:]:
+                    if r < len(logits) and math.isfinite(logits[r]):
+                        logits[r] -= math.log(args.reppen)
             if args.temp <= 0:
                 nxt = int(torch.argmax(logits))
             else:
@@ -140,8 +150,6 @@ def main():
                     logits[logits < kth] = float("-inf")
                 probs = torch.softmax(logits, dim=-1)
                 nxt = int(torch.multinomial(probs, 1, generator=g))
-            if nxt < len(bpe.vocab) and bpe.vocab[nxt].startswith("<"):
-                break
             ids.append(nxt)
             out.append(bpe.vocab[nxt] if nxt < len(bpe.vocab) else "")
             print(out[-1], end="", flush=True)
