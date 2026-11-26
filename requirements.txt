@@ -1,0 +1,6 @@
+# GPU 学習用（scripts/train_torch.py, scripts/infer_torch.py）
+# Windows + CUDA:  pip install torch --index-url https://download.pytorch.org/whl/cu121
+#                 pip install -r requirements.txt
+# macOS (CPU):    pip install -r requirements.txt
+numpy>=1.26
+torch>=2.4

@@ -68,3 +68,25 @@ memcheck[gen]: 8 samples, 20-gram in corpus 216/2043 (10.6%), longest 97 chars (
 - `-checkn` 窓の長さ（既定 20 文字）
 - `-samples` 生成するサンプル数（seed を 1 つずつずらす）
 - 20-gram がコーパスに存在する割合が高いほど暗記している
+
+## 環境を揃える
+
+Mac と Windows で同じ構成にするための決め事。
+
+| 項目 | 値 |
+|---|---|
+| Go | 1.25.6（`go.mod` と同じ） |
+| Python | 3.13 |
+| torch | `requirements.txt`（Windows は cu121 か cu130 の wheel） |
+| データ | `testdata/discord/{raw,corpus,model}` に統一（git 管理外） |
+| モデル出力 | `testdata/discord/model/*.bin` |
+
+```
+$ python3 scripts/build_discord_corpus.py --keep-urls --no-bots --drop-urls --drop-ascii-noise --cap-repeat 10
+$ go run . tok -in testdata/discord/corpus/train_all.txt -vocab 12000 -minchar 10 -dir testdata/discord/model
+$ go run . ids -in testdata/discord/corpus/train_all.txt -dir testdata/discord/model -out testdata/discord/model/ids_all.bin
+$ sh scripts/make_bundle.sh            # GPU 機に渡す tgz を作る
+```
+
+**役割分担**: コードは Mac で直して main に push、Windows は `git pull` して学習だけ回す。
+データ（`testdata/discord/`）は git に載せないので、`scripts/make_bundle.sh` で渡す。
