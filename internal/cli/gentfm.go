@@ -32,7 +32,7 @@ func genTfm(path, prompt string, n int, temp float64, seed int64, tok *tokenizer
 	}
 	log.Printf("model: %s (dim %d, %d layers, ctx %d)", path, m.Cfg.Dim, m.Cfg.Layers, m.Cfg.Ctx)
 
-	if len(tok.Encode(prompt)) == 0 {
+	if len(tok.Encode(strings.TrimPrefix(prompt, "<bos>"))) == 0 {
 		log.Fatal("プロンプトを指定してください")
 	}
 	var all []string
@@ -53,7 +53,11 @@ func genTfm(path, prompt string, n int, temp float64, seed int64, tok *tokenizer
 
 // genTfmOne は 1 サンプル生成し、生成部分を返す。
 func genTfmOne(m *nn.Model, tok *tokenizer.Model, prompt string, n int, temp float64, seed int64) string {
+	// "<bos>" で始めると文書の先頭から生成する（<bos> は特殊トークンなので Encode では出てこない）
 	out := tok.Encode(prompt)
+	if rest, ok := strings.CutPrefix(prompt, "<bos>"); ok {
+		out = append([]int32{tokenizer.BosID}, tok.Encode(rest)...)
+	}
 	fmt.Print(prompt)
 	var gen strings.Builder
 	rng := rand.New(rand.NewSource(seed))
