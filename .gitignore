@@ -39,3 +39,4 @@ testdata/japanese_corpus.txt
 testdata/lit.txt
 testdata/.collect_cache.jsonl
 *.bin
+testdata/discord/

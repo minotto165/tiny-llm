@@ -22,6 +22,7 @@ func LM(args []string) {
 	holdout := fs.Float64("holdout", 0.05, "末尾から評価に回す割合")
 	minChar := fs.Int("minchar", 50, "これ未満の頻度の文字は <unk> にする")
 	dir := fs.String("dir", "testdata", "dic.txt / merges.txt のあるディレクトリ")
+	vocabSize := fs.Int("vocab", 32000, "語彙数 (dic.txt が無いときだけ使う)")
 	fs.Parse(args)
 
 	src, err := os.ReadFile(*inPath)
@@ -52,22 +53,31 @@ func LM(args []string) {
 	}
 
 	t0 := time.Now()
-	res, err := tokenizer.Train(head, tokenizer.Config{
-		VocabSize:    32000,
-		MinCount:     minCount,
-		MinCharCount: *minChar,
-		Batch:        batch,
-	})
-	if err != nil {
-		log.Fatal(err)
+	dictPath, mergesPath := artifacts(*dir)
+	var model *tokenizer.Model
+	if vocab, err := tokenizer.ReadVocab(dictPath); err == nil {
+		if merges, err := tokenizer.ReadMerges(mergesPath); err == nil {
+			model = tokenizer.NewModel(vocab, merges)
+		}
 	}
-	model := res.Model()
+	if model == nil {
+		res, err := tokenizer.Train(head, tokenizer.Config{
+			VocabSize:    *vocabSize,
+			MinCount:     minCount,
+			MinCharCount: *minChar,
+			Batch:        batch,
+		})
+		if err != nil {
+			log.Fatal(err)
+		}
+		model = res.Model()
+	}
 	headIDs := model.Encode(string(head))
 	tailIDs := model.Encode(tail)
 	tokDur := time.Since(t0)
 
 	t1 := time.Now()
-	m := lm.TrainFull(headIDs, len(res.Vocab), *order, lm.DefaultDiscount, hiKeepFor(*order), hiWeightFor(*order))
+	m := lm.TrainFull(headIDs, len(model.Vocab), *order, lm.DefaultDiscount, hiKeepFor(*order), hiWeightFor(*order))
 	bits, unk := 0.0, 0
 	for i, id := range tailIDs {
 		from := i - (*order - 1)

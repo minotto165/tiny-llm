@@ -3,8 +3,8 @@
 
 BPE の分割も Python 側で行うので、Go のバイナリ無しで推論できる。
 
-  python scripts/infer_torch.py --model testdata/tfm_all.bin \
-      --dir ~/Downloads/discord_extract/corpus_raw/model -p "草" -n 60 --temp 1.0
+  python scripts/infer_torch.py --model testdata/tfm_v3.bin \
+      --dir testdata/discord/model -p "草" -n 60 --temp 1.0
 
   # 分割だけ確認する
   python scripts/infer_torch.py --dir <dir> --dump-ids "吾輩は猫である"

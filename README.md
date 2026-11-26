@@ -11,6 +11,7 @@ $ go run . tfm -steps 2000          # Transformer を学習して testdata/tfm.b
 $ python3 scripts/train_torch.py --ids testdata/ids.bin --out testdata/tfm.bin  # GPU で学習
 $ go test ./...
 $ python3 scripts/collect_corpus.py # 青空文庫と Wikipedia から input.txt を作る
+$ python3 scripts/build_discord_corpus.py # Discord の生 JSON から testdata/discord/corpus を作る
 ```
 
 `tok`（トークナイザ）→ `train`（n-gram のカウント）→ `gen`（生成）の順に使う。
@@ -20,7 +21,7 @@ $ python3 scripts/collect_corpus.py # 青空文庫と Wikipedia から input.txt
 |---|---|
 | `tok` | `-in` `-dir` (出力先) `-vocab` |
 | `train` | `-in` `-order` `-out` |
-| `gen` | `-model` `-prompt` `-n` `-temp` `-seed` |
+| `gen` | `-model` `-dir` `-prompt` `-n` `-temp` `-seed` |
 | `lm` | `-in` `-order` `-eval` `-holdout` |
 | `tfm` | `-in` `-out` `-ctx` `-dim` `-heads` `-layers` `-ffn` `-steps` `-batch` `-lr` `-seed` |
 | `ids` | `-in` `-out` |
@@ -29,3 +30,26 @@ $ python3 scripts/collect_corpus.py # 青空文庫と Wikipedia から input.txt
 `ngram.bin` / `tfm.bin` は学習済みモデルで、`dic.txt`/`merges.txt` のハッシュを記録しており、
 語彙が変わっていると `gen` が読み込みを拒否する。`gen` はモデル先頭のマジックで n-gram と
 Transformer を自動判別する。GPU 学習は `ids` で ID 列を作り、`scripts/train_torch.py` に渡す。
+
+## Discord コーパス
+
+`testdata/discord/` に生データと生成物を置く（どちらも git 管理外）。
+
+```
+testdata/discord/raw/all_part*.json   Discord API から落とした生 JSON
+testdata/discord/raw/names.json       ユーザーID → 表示名
+testdata/discord/corpus/              生成された train/valid/test_all.txt
+testdata/discord/model/               dic.txt, merges.txt, ids_all.bin
+```
+
+```
+$ python3 scripts/build_discord_corpus.py \
+    --keep-urls --no-bots --drop-urls --drop-ascii-noise --cap-repeat 10
+$ go run . tok -in testdata/discord/corpus/train_all.txt -vocab 12000 -minchar 10 -dir testdata/discord/model
+$ go run . ids -in testdata/discord/corpus/train_all.txt -dir testdata/discord/model -out testdata/discord/model/ids_all.bin
+$ go run . lm  -in testdata/discord/corpus/train_all.txt -eval testdata/discord/corpus/test_all.txt -dir testdata/discord/model
+```
+
+`--drop-urls` は URL を本文から除去、`--drop-ascii-noise` は日本語を含まない英数字ノイズ
+（`m!repeat`, `KNTRYK` など）を除去、`--cap-repeat N` は同一人物の同一文の連投を N 回までに畳む。
+`--url-domain` は URL をドメインだけに残す。
