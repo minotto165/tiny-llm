@@ -124,7 +124,6 @@ def save(model, out, tokhash):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ids", default="testdata/ids.bin", help="go run . ids の出力")
-    ap.add_argument("--dir", default="testdata", help="dic.txt / merges.txt のあるディレクトリ")
     ap.add_argument("--out", default="testdata/tfm.bin")
     ap.add_argument("--vocab", type=int, default=0, help="語彙数 (省略時は dic.txt から)")
     ap.add_argument("--ctx", type=int, default=128)
