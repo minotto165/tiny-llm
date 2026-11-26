@@ -40,3 +40,5 @@ testdata/lit.txt
 testdata/.collect_cache.jsonl
 *.bin
 testdata/discord/
+.DS_Store
+__pycache__/
