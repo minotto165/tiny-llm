@@ -86,10 +86,11 @@ def load_weights(path):
 def build_model(cfg, ws):
     import torch
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from train_torch import TF
+    from train_torch import TF, param_order
     m = TF(cfg["vocab"], cfg["ctx"], cfg["dim"], cfg["heads"], cfg["layers"], cfg["ffn"], 0.0)
     with torch.no_grad():
-        for p, w in zip(m.parameters(), ws):
+        # Module.parameters() は登録順（直下のパラメータが先）なので param_order を使う
+        for p, w in zip(param_order(m), ws):
             p.copy_(torch.from_numpy(w))
     m.eval()
     return m
