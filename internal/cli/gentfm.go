@@ -61,14 +61,12 @@ func genTfmOne(m *nn.Model, tok *tokenizer.Model, prompt string, n int, seed int
 	fmt.Print(prompt)
 	var gen strings.Builder
 	rng := rand.New(rand.NewSource(seed))
+	cache := nn.NewKVCache(m)
+	var row []float64
+	for _, id := range out {
+		row = m.Step(cache, id)
+	}
 	for i := 0; i < n; i++ {
-		from := len(out) - m.Cfg.Ctx
-		if from < 0 {
-			from = 0
-		}
-		c := m.Forward(out[from:])
-		t := c.T
-		row := append([]float64(nil), c.Logits.D[(t-1)*c.Logits.C:t*c.Logits.C]...)
 		recent := out
 		if sp.repWin > 0 && len(recent) > sp.repWin {
 			recent = recent[len(recent)-sp.repWin:]
@@ -77,6 +75,7 @@ func genTfmOne(m *nn.Model, tok *tokenizer.Model, prompt string, n int, seed int
 		out = append(out, id)
 		gen.WriteString(tok.Vocab[id])
 		fmt.Print(tok.Vocab[id])
+		row = m.Step(cache, id)
 	}
 	fmt.Println()
 	return gen.String()
