@@ -31,7 +31,9 @@ func Gen(args []string) {
 	n := fs.Int("n", 80, "生成するトークン数")
 	temp := fs.Float64("temp", 0.8, "温度 (0 = 貪欲)")
 	seed := fs.Int64("seed", 1, "乱数シード")
+	dir := fs.String("dir", "testdata", "dic.txt / merges.txt のあるディレクトリ")
 	fs.Parse(args)
+	dictPath, mergesPath := artifacts(*dir)
 
 	vocab, err := tokenizer.ReadVocab(dictPath)
 	if err != nil {
@@ -41,7 +43,7 @@ func Gen(args []string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	hash, err := tokenizerHash()
+	hash, err := tokenizerHash(*dir)
 	if err != nil {
 		log.Fatal(err)
 	}

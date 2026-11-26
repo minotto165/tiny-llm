@@ -5,6 +5,7 @@ import (
 	"flag"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -13,12 +14,7 @@ import (
 )
 
 const (
-	outPath    = "testdata/output.txt"
-	dictPath   = "testdata/dic.txt"
-	mergesPath = "testdata/merges.txt"
-
 	minCount   = 2
-	minChar    = 50
 	batch      = 200
 	minRareCut = 100
 )
@@ -27,7 +23,16 @@ func Tok(args []string) {
 	fs := flag.NewFlagSet("tok", flag.ExitOnError)
 	inPath := fs.String("in", "testdata/input.txt", "コーパス (UTF-8)")
 	vocabSize := fs.Int("vocab", 32000, "語彙数")
+	dir := fs.String("dir", "testdata", "dic.txt / merges.txt / output.txt の出力先")
+	minChar := fs.Int("minchar", 50, "これ未満の頻度の文字は <unk> にする")
 	fs.Parse(args)
+
+	outPath := filepath.Join(*dir, "output.txt")
+	dictPath := filepath.Join(*dir, "dic.txt")
+	mergesPath := filepath.Join(*dir, "merges.txt")
+	if err := os.MkdirAll(*dir, 0o755); err != nil {
+		log.Fatal(err)
+	}
 
 	src, err := os.ReadFile(*inPath)
 	if err != nil {
@@ -38,7 +43,7 @@ func Tok(args []string) {
 	res, err := tokenizer.Train(src, tokenizer.Config{
 		VocabSize:    *vocabSize,
 		MinCount:     minCount,
-		MinCharCount: minChar,
+		MinCharCount: *minChar,
 		Batch:        batch,
 	})
 	if err != nil {
@@ -63,7 +68,7 @@ func Tok(args []string) {
 	}
 	var expected, joined strings.Builder
 	for _, r := range string(src) {
-		if counts[r] >= minChar {
+		if counts[r] >= *minChar {
 			expected.WriteRune(r)
 		}
 	}

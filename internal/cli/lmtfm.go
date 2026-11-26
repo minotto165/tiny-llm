@@ -12,7 +12,8 @@ import (
 )
 
 // evalTfm は tail を Transformer で評価し、BPB (bits per UTF-8 byte) を出す。
-func evalTfm(modelPath, tail string, limit int) {
+func evalTfm(modelPath, tail string, limit int, dir string) {
+	dictPath, mergesPath := artifacts(dir)
 	vocab, err := tokenizer.ReadVocab(dictPath)
 	if err != nil {
 		log.Fatal(err)
@@ -21,7 +22,7 @@ func evalTfm(modelPath, tail string, limit int) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	hash, err := tokenizerHash()
+	hash, err := tokenizerHash(dir)
 	if err != nil {
 		log.Fatal(err)
 	}

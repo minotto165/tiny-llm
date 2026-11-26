@@ -18,7 +18,9 @@ func Train(args []string) {
 	inPath := fs.String("in", "testdata/input.txt", "コーパス")
 	order := fs.Int("order", 3, "マルコフ次数 (1..10)")
 	outPath := fs.String("out", "testdata/ngram.bin", "保存先")
+	dir := fs.String("dir", "testdata", "dic.txt / merges.txt のあるディレクトリ")
 	fs.Parse(args)
+	dictPath, mergesPath := artifacts(*dir)
 
 	vocab, err := tokenizer.ReadVocab(dictPath)
 	if err != nil {
@@ -28,7 +30,7 @@ func Train(args []string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	hash, err := tokenizerHash()
+	hash, err := tokenizerHash(*dir)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -57,8 +59,9 @@ func Train(args []string) {
 }
 
 // tokenizerHash は dic.txt と merges.txt の内容から語彙の同一性を表すハッシュを作る。
-func tokenizerHash() (uint64, error) {
+func tokenizerHash(dir string) (uint64, error) {
 	h := fnv.New64a()
+	dictPath, mergesPath := artifacts(dir)
 	for _, p := range []string{dictPath, mergesPath} {
 		b, err := os.ReadFile(p)
 		if err != nil {

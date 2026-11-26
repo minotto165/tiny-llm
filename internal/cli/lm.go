@@ -20,6 +20,8 @@ func LM(args []string) {
 	modelPath := fs.String("model", "", "保存済み Transformer を評価する (tfm.bin)")
 	limit := fs.Int("limit", 0, "先頭 N トークンだけ評価 (0=全部)")
 	holdout := fs.Float64("holdout", 0.05, "末尾から評価に回す割合")
+	minChar := fs.Int("minchar", 50, "これ未満の頻度の文字は <unk> にする")
+	dir := fs.String("dir", "testdata", "dic.txt / merges.txt のあるディレクトリ")
 	fs.Parse(args)
 
 	src, err := os.ReadFile(*inPath)
@@ -45,7 +47,7 @@ func LM(args []string) {
 	}
 
 	if *modelPath != "" {
-		evalTfm(*modelPath, tail, *limit)
+		evalTfm(*modelPath, tail, *limit, *dir)
 		return
 	}
 
@@ -53,7 +55,7 @@ func LM(args []string) {
 	res, err := tokenizer.Train(head, tokenizer.Config{
 		VocabSize:    32000,
 		MinCount:     minCount,
-		MinCharCount: minChar,
+		MinCharCount: *minChar,
 		Batch:        batch,
 	})
 	if err != nil {

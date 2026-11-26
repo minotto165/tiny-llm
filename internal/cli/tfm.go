@@ -26,7 +26,9 @@ func Tfm(args []string) {
 	batch := fs.Int("batch", 8, "1 ステップあたりの系列数")
 	lr := fs.Float64("lr", 3e-4, "学習率")
 	seed := fs.Int64("seed", 1, "乱数シード")
+	dir := fs.String("dir", "testdata", "dic.txt / merges.txt のあるディレクトリ")
 	fs.Parse(args)
+	dictPath, mergesPath := artifacts(*dir)
 
 	vocab, err := tokenizer.ReadVocab(dictPath)
 	if err != nil {
@@ -36,7 +38,7 @@ func Tfm(args []string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	hash, err := tokenizerHash()
+	hash, err := tokenizerHash(*dir)
 	if err != nil {
 		log.Fatal(err)
 	}

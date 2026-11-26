@@ -18,7 +18,7 @@ $ python3 scripts/collect_corpus.py # 青空文庫と Wikipedia から input.txt
 
 | コマンド | フラグ |
 |---|---|
-| `tok` | `-in` `-vocab` |
+| `tok` | `-in` `-dir` (出力先) `-vocab` |
 | `train` | `-in` `-order` `-out` |
 | `gen` | `-model` `-prompt` `-n` `-temp` `-seed` |
 | `lm` | `-in` `-order` `-eval` `-holdout` |

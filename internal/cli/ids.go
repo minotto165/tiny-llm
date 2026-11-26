@@ -17,7 +17,9 @@ func Ids(args []string) {
 	fs := flag.NewFlagSet("ids", flag.ExitOnError)
 	inPath := fs.String("in", "testdata/lit.txt", "コーパス")
 	outPath := fs.String("out", "testdata/ids.bin", "出力 (int32 little endian)")
+	dir := fs.String("dir", "testdata", "dic.txt / merges.txt のあるディレクトリ")
 	fs.Parse(args)
+	dictPath, mergesPath := artifacts(*dir)
 
 	vocab, err := tokenizer.ReadVocab(dictPath)
 	if err != nil {
