@@ -124,6 +124,7 @@ def save(model, out, tokhash):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ids", default="testdata/ids.bin", help="go run . ids の出力")
+    ap.add_argument("--dir", default="testdata", help="dic.txt / merges.txt のあるディレクトリ")
     ap.add_argument("--out", default="testdata/tfm.bin")
     ap.add_argument("--vocab", type=int, default=0, help="語彙数 (省略時は dic.txt から)")
     ap.add_argument("--ctx", type=int, default=128)
@@ -145,8 +146,7 @@ def main():
 
     if args.vocab == 0:
         import json
-        here0 = os.path.dirname(os.path.abspath(__file__))
-        with open(os.path.join(here0, "..", "testdata", "dic.txt"), encoding="utf-8") as fh:
+        with open(os.path.join(args.dir, "dic.txt"), encoding="utf-8") as fh:
             args.vocab = len(json.load(fh))
     torch.manual_seed(args.seed)
     rng = np.random.default_rng(args.seed)
@@ -189,8 +189,8 @@ def main():
                   file=sys.stderr)
 
     here = os.path.dirname(os.path.abspath(__file__))
-    tokhash = fnv64([os.path.join(here, "..", "testdata", "dic.txt"),
-                     os.path.join(here, "..", "testdata", "merges.txt")])
+    tokhash = fnv64([os.path.join(args.dir, "dic.txt"),
+                     os.path.join(args.dir, "merges.txt")])
     save(model, args.out, tokhash)
     print(f"saved: {args.out}", file=sys.stderr)
 
