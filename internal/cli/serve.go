@@ -11,6 +11,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -117,6 +118,7 @@ func Serve(args []string) {
 		Addr:              *addr,
 		Handler:           e.routes(),
 		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 	log.Fatal(srv.ListenAndServe())
 }
@@ -138,8 +140,8 @@ func (e *serveEngine) effectiveTokens(requested int) int {
 }
 
 // generate はプロンプトの続きを n トークン生成し、トークンごとに emit する。
-// 生成したトークン数を返す。
-func (e *serveEngine) generate(prompt string, n int, sp sampling, seed int64, emit func(string)) int {
+// emit が false を返したら打ち切る（クライアント切断）。生成したトークン数を返す。
+func (e *serveEngine) generate(prompt string, n int, sp sampling, seed int64, emit func(string) bool) int {
 	ids := e.tok.Encode(prompt)
 	if len(ids) == 0 {
 		return 0
@@ -166,8 +168,10 @@ func (e *serveEngine) generate(prompt string, n int, sp sampling, seed int64, em
 		row = e.m.Step(cache, id)
 		hist = append(hist, id)
 		if s := e.tok.Vocab[id]; s != "" {
-			emit(s)
 			count++
+			if !emit(s) {
+				break
+			}
 		}
 	}
 	return count
@@ -177,6 +181,10 @@ func (e *serveEngine) routes() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			methodNotAllowed(w, http.MethodGet)
+			return
+		}
 		writeJSON(w, 200, map[string]any{
 			"object": "list",
 			"data": []any{map[string]any{
@@ -186,10 +194,19 @@ func (e *serveEngine) routes() http.Handler {
 	})
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			methodNotAllowed(w, http.MethodGet)
+			return
+		}
 		writeJSON(w, 200, map[string]any{"status": "ok", "ctx": e.ctx, "model": e.name})
 	})
 
 	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			methodNotAllowed(w, http.MethodPost)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 		var body struct {
 			Model    string `json:"model"`
 			Messages []struct {
@@ -205,8 +222,7 @@ func (e *serveEngine) routes() http.Handler {
 				IncludeUsage bool `json:"include_usage"`
 			} `json:"stream_options"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			writeJSON(w, 400, map[string]any{"error": "invalid json"})
+		if !decodeJSON(w, r, &body) {
 			return
 		}
 		if len(body.Messages) == 0 {
@@ -289,6 +305,11 @@ func (e *serveEngine) routes() http.Handler {
 	})
 
 	mux.HandleFunc("/v1/completions", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			methodNotAllowed(w, http.MethodPost)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 		var body struct {
 			Prompt      string  `json:"prompt"`
 			MaxTokens   int     `json:"max_tokens"`
@@ -296,8 +317,7 @@ func (e *serveEngine) routes() http.Handler {
 			Stream      bool    `json:"stream"`
 			Seed        int64   `json:"seed"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			writeJSON(w, 400, map[string]any{"error": "invalid json"})
+		if !decodeJSON(w, r, &body) {
 			return
 		}
 		sp := e.def
@@ -320,10 +340,19 @@ func (e *serveEngine) complete(w http.ResponseWriter, r *http.Request, prompt st
 	start := time.Now()
 	id := fmt.Sprintf("cmpl-%d", start.UnixNano())
 	promptTokens := len(e.tok.Encode(prompt))
+	finishReason := func(count int) string {
+		if count >= n {
+			return "length"
+		}
+		return "stop"
+	}
 
 	if !stream {
 		var sb strings.Builder
-		count := e.generate(prompt, n, sp, seed, func(s string) { sb.WriteString(s) })
+		count := e.generate(prompt, n, sp, seed, func(s string) bool {
+			sb.WriteString(s)
+			return true
+		})
 		elapsed := time.Since(start)
 		usage := map[string]any{
 			"prompt_tokens": promptTokens, "completion_tokens": count,
@@ -338,7 +367,7 @@ func (e *serveEngine) complete(w http.ResponseWriter, r *http.Request, prompt st
 				"choices": []any{map[string]any{
 					"index":         0,
 					"message":       map[string]any{"role": "assistant", "content": sb.String()},
-					"finish_reason": "stop",
+					"finish_reason": finishReason(count),
 				}},
 				"usage": usage,
 			})
@@ -346,7 +375,7 @@ func (e *serveEngine) complete(w http.ResponseWriter, r *http.Request, prompt st
 		}
 		writeJSON(w, 200, map[string]any{
 			"id": id, "object": "text_completion", "created": start.Unix(), "model": e.name,
-			"choices": []any{map[string]any{"index": 0, "text": sb.String(), "finish_reason": "stop"}},
+			"choices": []any{map[string]any{"index": 0, "text": sb.String(), "finish_reason": finishReason(count)}},
 			"usage":   usage,
 		})
 		return
@@ -367,18 +396,36 @@ func (e *serveEngine) complete(w http.ResponseWriter, r *http.Request, prompt st
 		fmt.Fprintf(w, "data: %s\n\n", b)
 		flusher.Flush()
 	}
-	delta := func(payload map[string]any) map[string]any {
-		return map[string]any{
-			"id": id, "object": "chat.completion.chunk", "created": start.Unix(), "model": e.name,
-			"choices": []any{map[string]any{"index": 0, "delta": payload, "finish_reason": nil}},
+	// chat と completions で chunk の形が違う (delta.content vs choices[].text)
+	sendChunk := func(content string, finish any) {
+		if chat {
+			send(map[string]any{
+				"id": id, "object": "chat.completion.chunk", "created": start.Unix(), "model": e.name,
+				"choices": []any{map[string]any{
+					"index": 0, "delta": map[string]any{"content": content}, "finish_reason": finish,
+				}},
+			})
+			return
 		}
+		send(map[string]any{
+			"id": id, "object": "text_completion", "created": start.Unix(), "model": e.name,
+			"choices": []any{map[string]any{"index": 0, "text": content, "finish_reason": finish}},
+		})
 	}
-	send(delta(map[string]any{"role": "assistant"}))
-	count := e.generate(prompt, n, sp, seed, func(s string) { send(delta(map[string]any{"content": s})) })
-	send(map[string]any{
-		"id": id, "object": "chat.completion.chunk", "created": start.Unix(), "model": e.name,
-		"choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}},
+
+	if chat {
+		send(map[string]any{
+			"id": id, "object": "chat.completion.chunk", "created": start.Unix(), "model": e.name,
+			"choices": []any{map[string]any{
+				"index": 0, "delta": map[string]any{"role": "assistant"}, "finish_reason": nil,
+			}},
+		})
+	}
+	count := e.generate(prompt, n, sp, seed, func(s string) bool {
+		sendChunk(s, nil)
+		return r.Context().Err() == nil
 	})
+	sendChunk("", finishReason(count))
 	if includeUsage {
 		send(map[string]any{
 			"id": id, "object": "chat.completion.chunk", "created": start.Unix(), "model": e.name,
@@ -655,6 +702,28 @@ func rawText(raw json.RawMessage) string {
 		return sb.String()
 	}
 	return string(raw)
+}
+
+// maxBodyBytes は 1 リクエストのボディ上限。
+const maxBodyBytes = 1 << 20
+
+// decodeJSON はリクエストボディを読む。上限超過は 413、その他は 400 を返す。
+func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
+	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"error": "body too large"})
+			return false
+		}
+		writeJSON(w, 400, map[string]any{"error": "invalid json"})
+		return false
+	}
+	return true
+}
+
+func methodNotAllowed(w http.ResponseWriter, allow string) {
+	w.Header().Set("Allow", allow)
+	writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

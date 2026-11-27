@@ -8,6 +8,7 @@ $ go run . train -order 3           # n-gram を学習して testdata/ngram.bin 
 $ go run . gen -prompt "吾輩は"      # 保存済みモデルで続きを生成
 $ go run . lm -order 3              # 末尾 5% を held-out にした BPB
 $ go run . tfm -steps 2000          # Transformer を学習して testdata/tfm.bin に保存
+$ go run . serve -model testdata/tfm.bin  # OpenAI 互換 HTTP (127.0.0.1:8100)
 $ python3 scripts/train_torch.py --ids testdata/ids.bin --out testdata/tfm.bin  # GPU で学習
 $ go test ./...
 $ python3 scripts/collect_corpus.py # 青空文庫と Wikipedia から input.txt を作る
@@ -25,11 +26,29 @@ $ python3 scripts/build_discord_corpus.py # Discord の生 JSON から testdata/
 | `lm` | `-in` `-order` `-eval` `-holdout` |
 | `tfm` | `-in` `-out` `-ctx` `-dim` `-heads` `-layers` `-ffn` `-steps` `-batch` `-lr` `-seed` |
 | `ids` | `-in` `-out` |
+| `serve` | `-model` `-dir` `-addr` `-name` `-temp` `-topk` `-reppen` `-history` |
 
 `output.txt` は `/` 区切り、`dic.txt` は語彙 (JSON 配列)、`merges.txt` は併合規則。`/` を除くと入力に戻る。
 `ngram.bin` / `tfm.bin` は学習済みモデルで、`dic.txt`/`merges.txt` のハッシュを記録しており、
 語彙が変わっていると `gen` が読み込みを拒否する。`gen` はモデル先頭のマジックで n-gram と
 Transformer を自動判別する。GPU 学習は `ids` で ID 列を作り、`scripts/train_torch.py` に渡す。
+
+## HTTP サーバ
+
+`serve` は学習済み Transformer を OpenAI 互換 API で提供する。
+
+```
+GET  /v1/models
+POST /v1/chat/completions   (stream 対応)
+POST /v1/completions        (stream 対応)
+GET  /health
+```
+
+会話履歴は持たないので、既定では最新のユーザーメッセージ 1 件だけをプロンプトにする
+（`-history` で増やせる）。system / assistant ロールと、要約・メタ情報の前置き、
+英語の指示文は既定で捨てる（`-keep-system` `-keep-assistant` `-allow-instruction` で無効化）。
+
+**認証は無い。** 既定は `127.0.0.1:8100`。`-addr 0.0.0.0:8100` にするならファイアウォールで絞ること。
 
 ## Discord コーパス
 
