@@ -26,9 +26,6 @@ import (
 	"github.com/minotto165/tiny-llm/tokenizer"
 )
 
-// minJapaneseRatio はプロンプトとして受け付ける日本語の最小割合。
-const minJapaneseRatio = 0.1
-
 type serveEngine struct {
 	m          *nn.Model
 	tok        *tokenizer.Model
@@ -39,9 +36,7 @@ type serveEngine struct {
 	logPrompt  bool
 	keepAsst   bool
 	history    int
-	jpOnly     bool
 	allowInstr bool
-	stripMeta  bool
 	defTokens  int
 	maxTokens  int
 }
@@ -59,9 +54,7 @@ func Serve(args []string) {
 	repwin := fs.Int("repwin", 32, "重複ペナルティを見るトークン数")
 	keepSystem := fs.Bool("keep-system", false, "system / developer ロールのメッセージもプロンプトに含める")
 	keepAssistant := fs.Bool("keep-assistant", false, "assistant ロール（自分の過去出力）もプロンプトに含める")
-	keepEnglish := fs.Bool("keep-english", false, "日本語を含まないメッセージもプロンプトに含める")
 	allowInstruction := fs.Bool("allow-instruction", false, "英語の指示文（要約・翻訳など）もそのまま生成に回す")
-	quoteOnly := fs.Bool("quote-only", false, "引用ブロックの除去だけを行い、他のフィルタを全部切る")
 	history := fs.Int("history", 1, "プロンプトに含める直近のユーザーメッセージ数 (1 = 最新のみ)")
 	defaultTokens := fs.Int("default-tokens", 160, "クライアントが max_tokens を指定しないときの生成数")
 	maxTokens := fs.Int("max-tokens", 2048, "1リクエストで生成するトークン数の上限")
@@ -113,18 +106,9 @@ func Serve(args []string) {
 		logPrompt:  *logPrompt,
 		keepAsst:   *keepAssistant,
 		history:    *history,
-		jpOnly:     !*keepEnglish,
 		allowInstr: *allowInstruction,
-		stripMeta:  !*quoteOnly,
 		defTokens:  *defaultTokens,
 		maxTokens:  *maxTokens,
-	}
-	if *quoteOnly {
-		e.keepSystem = true
-		e.keepAsst = true
-		e.jpOnly = false
-		e.allowInstr = true
-		e.history = 0 // 全メッセージを使う
 	}
 	log.Printf("model: %s (dim %d, %d layers, ctx %d)", *modelPath, m.Cfg.Dim, m.Cfg.Layers, m.Cfg.Ctx)
 	log.Printf("listening: http://%s/v1  model=%s", *addr, e.name)
@@ -239,29 +223,21 @@ func (e *serveEngine) routes() http.Handler {
 			if !e.keepAsst && isAssistantRole(msg.Role) {
 				continue
 			}
-			if s := e.cleanMessage(rawText(msg.Content)); s != "" {
-				// 日本語コーパスで学習したモデルなので、日本語を含まない
-				// メッセージ（英語の指示・実行環境の説明など）は捨てる。
-				if e.jpOnly && japaneseRatio(s) < minJapaneseRatio {
-					continue
-				}
+			raw := rawText(msg.Content)
+			if shouldDiscardMessage(raw) {
+				log.Printf("discard 要約・メタ情報のメッセージ (先頭: %q)", firstRunes(raw, 40))
+				continue
+			}
+			if s := e.cleanMessage(raw); s != "" {
 				parts = append(parts, s)
 			}
 		}
 		if len(parts) == 0 {
-			if e.jpOnly {
-				log.Printf("reject 日本語なし msgs=%d (先頭: %q)", len(body.Messages), firstText(body.Messages))
-				writeJSON(w, 400, map[string]any{
-					"error": "プロンプトが空です (引用だけのメッセージ、または日本語が含まれていません)",
-				})
-				return
-			}
-			// 全部落ちてしまった場合は、そのままの本文から生成する
-			for _, msg := range body.Messages {
-				if s := strings.TrimSpace(stripQuoted(rawText(msg.Content))); s != "" {
-					parts = append(parts, s)
-				}
-			}
+			log.Printf("reject プロンプト空 msgs=%d (先頭: %q)", len(body.Messages), firstText(body.Messages))
+			writeJSON(w, 400, map[string]any{
+				"error": "プロンプトが空です (引用・メタデータだけのメッセージ)",
+			})
+			return
 		}
 		limit := e.history
 		if limit > 0 && len(parts) > limit {
@@ -440,6 +416,15 @@ func firstHeader(r *http.Request, names ...string) string {
 	return ""
 }
 
+// firstRunes は先頭 n 文字を返す（ログ用）。
+func firstRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) > n {
+		r = r[:n]
+	}
+	return string(r)
+}
+
 // firstText は最初のメッセージ本文の先頭を返す（拒否ログ用）。
 func firstText(msgs []struct {
 	Role    string          `json:"role"`
@@ -453,6 +438,83 @@ func firstText(msgs []struct {
 		head = head[:40]
 	}
 	return string(head)
+}
+
+var (
+	// コードフェンス
+	fenceRe = regexp.MustCompile("^\\s*```")
+	// 1行まるごとの JSON / 配列
+	jsonLineRe = regexp.MustCompile(`^\s*[\[{].*[\]}],?\s*$`)
+	// "CONVERSATION:" のような大文字ラベル行
+	labelLineRe = regexp.MustCompile(`^\s*[A-Z][A-Z0-9 _-]{2,24}:\s*$`)
+	// URL だけの行
+	urlLineRe = regexp.MustCompile(`^\s*(https?://|www\.)\S+\s*$`)
+	// クライアントが付ける前置き（実行環境の説明・メタ情報）。実測で確認したもの。
+	preambleRe = regexp.MustCompile(`(?i)^(current runtime context|current working directory|current dsh file policy|time sampled while preparing|browser time zone for this request|elapsed since the preceding model-visible message|approval prompts are enabled|generate the session title|provide a concise summary|merge these two conversation summaries|conversation:|tools:|session:|system:|developer:)`)
+)
+
+var (
+	// メッセージ全体を捨てる判定に使う、クライアントの要約・メタ情報の前置き（実測で確認）
+	discardMsgRe = regexp.MustCompile(`(?i)\A\s*(provide a concise summary|merge these two conversation summaries|generate the session title|current runtime context|time sampled while preparing|browser time zone for this request|elapsed since the preceding model-visible message)`)
+	// user: / assistant: のような役割付きの行
+	roleLineRe = regexp.MustCompile(`(?im)^\s*(user|assistant|system|tool|human|ai)\s*:`)
+)
+
+// shouldDiscardMessage はメッセージ全体を捨てるかどうかを返す（構造判定のみ）。
+//   - 既知の要約・メタ情報の前置きで始まる（picoclaw の要約、DSH の実行環境説明）
+//   - 役割付きの会話ログが2行以上あり、1行目が ASCII だけ＝要約用に整形されたプロンプト
+func shouldDiscardMessage(s string) bool {
+	if discardMsgRe.MatchString(s) {
+		return true
+	}
+	if len(roleLineRe.FindAllStringIndex(s, 3)) >= 2 {
+		first := s
+		if i := strings.IndexByte(s, '\n'); i >= 0 {
+			first = s[:i]
+		}
+		if isASCII(first) {
+			return true
+		}
+	}
+	return false
+}
+
+// isASCII は ASCII 文字だけで構成されているかを返す。
+func isASCII(s string) bool {
+	for _, r := range s {
+		if r > 127 {
+			return false
+		}
+	}
+	return true
+}
+
+// stripStructure は「機械が付けた体裁」の行を落とす。
+// 英語かどうかではなく、タグ・コードブロック・JSON・ラベル行・URL・既知の前置きで判定する。
+func stripStructure(s string) string {
+	lines := strings.Split(s, "\n")
+	kept := make([]string, 0, len(lines))
+	inFence := false
+	for _, line := range lines {
+		t := strings.TrimSpace(line)
+		if fenceRe.MatchString(t) {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
+		if t == "" {
+			kept = append(kept, "")
+			continue
+		}
+		if preambleRe.MatchString(t) || jsonLineRe.MatchString(t) ||
+			labelLineRe.MatchString(t) || urlLineRe.MatchString(t) {
+			continue
+		}
+		kept = append(kept, strings.TrimRight(line, " \t"))
+	}
+	return strings.Trim(strings.Join(kept, "\n"), "\n")
 }
 
 // quoteRe は Discord の返信を引用したブロックの先頭。
@@ -537,9 +599,7 @@ func looksLikeInstruction(s string) bool {
 // 「続きの文章」が英語に流れるので、タグとIDだけの行は捨てる。
 func (e *serveEngine) cleanMessage(s string) string {
 	s = stripQuoted(s)
-	if !e.stripMeta {
-		return strings.TrimSpace(s)
-	}
+	s = stripStructure(s)
 	s = tagRe.ReplaceAllString(s, "")
 	kept := make([]string, 0, 8)
 	for _, line := range strings.Split(s, "\n") {
