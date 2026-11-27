@@ -26,9 +26,6 @@ import (
 	"github.com/minotto165/tiny-llm/tokenizer"
 )
 
-// maxGenerate は1リクエストで生成するトークン数の上限（暴走した要求を弾くだけ）。
-const maxGenerate = 2048
-
 // minJapaneseRatio はプロンプトとして受け付ける日本語の最小割合。
 const minJapaneseRatio = 0.1
 
@@ -43,6 +40,10 @@ type serveEngine struct {
 	keepAsst   bool
 	history    int
 	jpOnly     bool
+	allowInstr bool
+	stripMeta  bool
+	defTokens  int
+	maxTokens  int
 }
 
 // Serve は OpenAI 互換サーバーを起動する。
@@ -59,7 +60,11 @@ func Serve(args []string) {
 	keepSystem := fs.Bool("keep-system", false, "system / developer ロールのメッセージもプロンプトに含める")
 	keepAssistant := fs.Bool("keep-assistant", false, "assistant ロール（自分の過去出力）もプロンプトに含める")
 	keepEnglish := fs.Bool("keep-english", false, "日本語を含まないメッセージもプロンプトに含める")
+	allowInstruction := fs.Bool("allow-instruction", false, "英語の指示文（要約・翻訳など）もそのまま生成に回す")
+	quoteOnly := fs.Bool("quote-only", false, "引用ブロックの除去だけを行い、他のフィルタを全部切る")
 	history := fs.Int("history", 1, "プロンプトに含める直近のユーザーメッセージ数 (1 = 最新のみ)")
+	defaultTokens := fs.Int("default-tokens", 160, "クライアントが max_tokens を指定しないときの生成数")
+	maxTokens := fs.Int("max-tokens", 2048, "1リクエストで生成するトークン数の上限")
 	logPrompt := fs.Bool("log-prompt", false, "受け取ったプロンプトの先頭をログに出す（切り分け用）")
 	fs.Parse(args)
 
@@ -109,6 +114,17 @@ func Serve(args []string) {
 		keepAsst:   *keepAssistant,
 		history:    *history,
 		jpOnly:     !*keepEnglish,
+		allowInstr: *allowInstruction,
+		stripMeta:  !*quoteOnly,
+		defTokens:  *defaultTokens,
+		maxTokens:  *maxTokens,
+	}
+	if *quoteOnly {
+		e.keepSystem = true
+		e.keepAsst = true
+		e.jpOnly = false
+		e.allowInstr = true
+		e.history = 0 // 全メッセージを使う
 	}
 	log.Printf("model: %s (dim %d, %d layers, ctx %d)", *modelPath, m.Cfg.Dim, m.Cfg.Layers, m.Cfg.Ctx)
 	log.Printf("listening: http://%s/v1  model=%s", *addr, e.name)
@@ -121,6 +137,22 @@ func Serve(args []string) {
 	log.Fatal(srv.ListenAndServe())
 }
 
+// effectiveTokens は要求された max_tokens をサーバーの既定値・上限に当てはめる。
+// 0 以下（未指定）は -default-tokens、上限は -max-tokens。
+func (e *serveEngine) effectiveTokens(requested int) int {
+	n := requested
+	if n <= 0 {
+		n = e.defTokens
+	}
+	if e.maxTokens > 0 && n > e.maxTokens {
+		n = e.maxTokens
+	}
+	if n <= 0 {
+		n = 1
+	}
+	return n
+}
+
 // generate はプロンプトの続きを n トークン生成し、トークンごとに emit する。
 // 生成したトークン数を返す。
 func (e *serveEngine) generate(prompt string, n int, sp sampling, seed int64, emit func(string)) int {
@@ -130,11 +162,6 @@ func (e *serveEngine) generate(prompt string, n int, sp sampling, seed int64, em
 	}
 	if len(ids) > e.ctx-1 {
 		ids = ids[len(ids)-(e.ctx-1):]
-	}
-	// 文脈長を超える生成は Step が窓を張り直して続けるので、上限は要求側で決める。
-	// 暴走した要求だけを弾く。
-	if n > maxGenerate {
-		n = maxGenerate
 	}
 
 	cache := nn.NewKVCache(e.m)
@@ -212,7 +239,7 @@ func (e *serveEngine) routes() http.Handler {
 			if !e.keepAsst && isAssistantRole(msg.Role) {
 				continue
 			}
-			if s := cleanMessage(rawText(msg.Content)); s != "" {
+			if s := e.cleanMessage(rawText(msg.Content)); s != "" {
 				// 日本語コーパスで学習したモデルなので、日本語を含まない
 				// メッセージ（英語の指示・実行環境の説明など）は捨てる。
 				if e.jpOnly && japaneseRatio(s) < minJapaneseRatio {
@@ -225,27 +252,35 @@ func (e *serveEngine) routes() http.Handler {
 			if e.jpOnly {
 				log.Printf("reject 日本語なし msgs=%d (先頭: %q)", len(body.Messages), firstText(body.Messages))
 				writeJSON(w, 400, map[string]any{
-					"error": "プロンプトに日本語が含まれていません (このモデルは日本語コーパスのみ。" +
-						"必要なら -keep-english で無効化)",
+					"error": "プロンプトが空です (引用だけのメッセージ、または日本語が含まれていません)",
 				})
 				return
 			}
 			// 全部落ちてしまった場合は、そのままの本文から生成する
 			for _, msg := range body.Messages {
-				if s := strings.TrimSpace(rawText(msg.Content)); s != "" {
+				if s := strings.TrimSpace(stripQuoted(rawText(msg.Content))); s != "" {
 					parts = append(parts, s)
 				}
 			}
 		}
 		limit := e.history
-		if limit <= 0 {
-			limit = 1
-		}
-		if len(parts) > limit {
+		if limit > 0 && len(parts) > limit {
 			parts = parts[len(parts)-limit:]
 		}
 		prompt := strings.Join(parts, "\n")
 
+		if !e.allowInstr && looksLikeInstruction(prompt) {
+			head := []rune(prompt)
+			if len(head) > 40 {
+				head = head[:40]
+			}
+			log.Printf("reject 指示文 msgs=%d (先頭: %q)", len(body.Messages), string(head))
+			writeJSON(w, 400, map[string]any{
+				"error": "指示文と判定しました (このモデルは日本語の続き生成のみ。" +
+					"要約・翻訳などの指示には応答できません)",
+			})
+			return
+		}
 		sp := e.def
 		if body.Temperature > 0 {
 			sp.temp = body.Temperature
@@ -255,22 +290,24 @@ func (e *serveEngine) routes() http.Handler {
 			// クライアントが指定しなければ毎回違うサンプルにする（ログの seed を送れば再現できる）
 			seed = time.Now().UnixNano()
 		}
-		n := body.MaxTokens
-		if n <= 0 {
-			n = 80
-		}
+		n := e.effectiveTokens(body.MaxTokens)
 		if e.logPrompt {
-			r := []rune(prompt)
-			head := r
+			rs := []rune(prompt)
+			head := rs
 			if len(head) > 400 {
 				head = head[:400]
 			}
-			tail := r
+			tail := rs
 			if len(tail) > 80 {
 				tail = tail[len(tail)-80:]
 			}
-			log.Printf("chat n=%d temp=%.2f seed=%d msgs=%d prompt=%d文字\n  全文=%q\n  末尾=%q",
-				n, sp.temp, seed, len(body.Messages), len(r), string(head), string(tail))
+			ua := r.UserAgent()
+			if len(ua) > 60 {
+				ua = ua[:60]
+			}
+			client := firstHeader(r, "X-Title", "X-Client-Name", "X-Client", "HTTP-Referer")
+			log.Printf("chat 要求max_tokens=%d → 使用n=%d temp=%.2f seed=%d msgs=%d prompt=%d文字 ua=%q client=%q\n  全文=%q\n  末尾=%q",
+				body.MaxTokens, n, sp.temp, seed, len(body.Messages), len(rs), ua, client, string(head), string(tail))
 		}
 		e.complete(w, r, prompt, n, sp, seed, body.Stream, true, body.StreamOptions.IncludeUsage)
 	})
@@ -295,10 +332,7 @@ func (e *serveEngine) routes() http.Handler {
 		if seed == 0 {
 			seed = time.Now().UnixNano()
 		}
-		n := body.MaxTokens
-		if n <= 0 {
-			n = 80
-		}
+		n := e.effectiveTokens(body.MaxTokens)
 		e.complete(w, r, body.Prompt, n, sp, seed, body.Stream, false, true)
 	})
 
@@ -393,6 +427,19 @@ var (
 	bareIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,16}$`)
 )
 
+// firstHeader は指定ヘッダのうち最初に見つかった値を返す（クライアント識別用）。
+func firstHeader(r *http.Request, names ...string) string {
+	for _, n := range names {
+		if v := r.Header.Get(n); v != "" {
+			if len(v) > 40 {
+				v = v[:40]
+			}
+			return v
+		}
+	}
+	return ""
+}
+
 // firstText は最初のメッセージ本文の先頭を返す（拒否ログ用）。
 func firstText(msgs []struct {
 	Role    string          `json:"role"`
@@ -406,6 +453,32 @@ func firstText(msgs []struct {
 		head = head[:40]
 	}
 	return string(head)
+}
+
+// quoteRe は Discord の返信を引用したブロックの先頭。
+// picoclaw は "\[quoted message from 名前\]: <引用本文>\n\n<ユーザーの本文>" の形で送ってくる。
+var quoteRe = regexp.MustCompile(`(?s)\A\s*\[quoted message from [^\]]{0,80}\]:`)
+
+// quoteEndRe は picoclaw のフォーク版が付ける終了マーカー。
+var quoteEndRe = regexp.MustCompile(`\n\[/quoted\]`)
+
+// stripQuoted は引用ブロックだけを取り除く。
+// 引用以外の本文には一切手を触れない（マーカーが無ければそのまま返す）。
+func stripQuoted(s string) string {
+	if !quoteRe.MatchString(s) {
+		return s
+	}
+	// 引用本文とユーザー本文の区切りは空行（picoclaw は refContent + "\n\n" + 本文 の順）。
+	// 最初の空行で切るので、ユーザー本文の段落はそのまま残る。
+	// 終了マーカーがあれば、そこまでが引用（本文中の空行に影響されない）
+	if m := quoteEndRe.FindStringIndex(s); m != nil {
+		return strings.TrimPrefix(s[m[1]:], "\n")
+	}
+	// 旧形式: 区切りは空行しかない
+	if i := strings.Index(s, "\n\n"); i >= 0 {
+		return s[i+2:]
+	}
+	return "" // 引用しか含まれていない
 }
 
 // japaneseRatio は空白を除いた文字のうち日本語（ひらがな・カタカナ・漢字）の割合を返す。
@@ -428,21 +501,56 @@ func japaneseRatio(s string) float64 {
 	return float64(ja) / float64(total)
 }
 
+// looksLikeInstruction は「日本語の続きを書かせる」のではなく
+// 「要約しろ」「翻訳しろ」のような英語の指示文かどうかを判定する。
+// 1行目が ASCII 主体で3語以上なら指示文とみなす。
+// このモデルは指示に従えないので、指示文を渡すと英語の崩れた続きが返るだけになる。
+func looksLikeInstruction(s string) bool {
+	line := s
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		line = s[:i]
+	}
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return false
+	}
+	if len(strings.Fields(line)) < 3 {
+		return false
+	}
+	ascii := 0
+	total := 0
+	for _, r := range line {
+		total++
+		if r < 128 {
+			ascii++
+		}
+	}
+	if total == 0 {
+		return false
+	}
+	return float64(ascii)/float64(total) > 0.8
+}
+
 // cleanMessage は プロンプトに混ぜたくない飾りを落とす。
 // ACP などのクライアントは <acp tokens="4" ...>m00001</acp> のような
 // メタデータ行をユーザー発話として送ってくる。英語タグが入ると
 // 「続きの文章」が英語に流れるので、タグとIDだけの行は捨てる。
-func cleanMessage(s string) string {
+func (e *serveEngine) cleanMessage(s string) string {
+	s = stripQuoted(s)
+	if !e.stripMeta {
+		return strings.TrimSpace(s)
+	}
 	s = tagRe.ReplaceAllString(s, "")
-	kept := make([]string, 0, 4)
+	kept := make([]string, 0, 8)
 	for _, line := range strings.Split(s, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || bareIDRe.MatchString(line) {
+		trimmed := strings.TrimSpace(line)
+		// ID だけの行はメタデータとして落とす。空行は本文の一部なので残す。
+		if bareIDRe.MatchString(trimmed) {
 			continue
 		}
-		kept = append(kept, line)
+		kept = append(kept, strings.TrimRight(line, " \t"))
 	}
-	return strings.Join(kept, "\n")
+	return strings.Trim(strings.Join(kept, "\n"), "\n")
 }
 
 // isAssistantRole は自分の過去出力かどうかを返す。
