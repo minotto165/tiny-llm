@@ -28,6 +28,8 @@ func main() {
 		cli.LM(os.Args[2:])
 	case "gen":
 		cli.Gen(os.Args[2:])
+	case "serve":
+		cli.Serve(os.Args[2:])
 	case "ids":
 		cli.Ids(os.Args[2:])
 	case "-h", "--help", "help":
@@ -48,6 +50,7 @@ commands:
   lm    n-gram マルコフ連鎖の held-out BPB を評価する
   gen   モデル (n-gram / Transformer) で続きを生成する
   ids   corpus をトークン ID 列 (int32) に変換する
+  serve 学習済み Transformer を OpenAI 互換 HTTP で提供する
 
 examples:
   go run . tok -in testdata/input.txt
